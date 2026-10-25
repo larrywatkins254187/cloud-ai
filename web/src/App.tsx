@@ -74,7 +74,7 @@ function LoggedIn() {
         <Route path="admin/servers" element={<Servers />} />
         <Route path="admin/settings" element={<Settings />} />
         <Route path="admin/cli" element={<Cli />} />
-        <Route path="admin/extensions" element={<Extensions />} />
+        <Route path="extensions" element={<Extensions />} />
         <Route path="admin/events" element={<Events />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

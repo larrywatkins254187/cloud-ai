@@ -138,6 +138,7 @@ async fn serve(cfg: Config) -> Result<()> {
         db,
         secrets,
         bus,
+        http: reqwest::Client::builder().user_agent(concat!("cloud-ai/", env!("CARGO_PKG_VERSION"))).build()?,
         runner: Default::default(),
         codex: Default::default(),
         telegram: Default::default(),

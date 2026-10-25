@@ -55,20 +55,23 @@ export function IconButton({
   );
 }
 
+// Callers may pass their own width (w-44, w-auto…); otherwise fields fill their container.
+const width = (className?: string) => (/(^|\s)(w-|max-w-|flex-1)/.test(className ?? "") ? "" : "w-full");
+
 const fieldCls =
-  "w-full rounded-lg border border-border bg-panel px-3 text-sm text-text placeholder:text-muted/70 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent disabled:opacity-60";
+  "rounded-lg border border-border bg-panel px-3 text-sm text-text placeholder:text-muted/70 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent disabled:opacity-60";
 
 export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(({ className, ...rest }, ref) => (
-  <input ref={ref} className={cx(fieldCls, "h-10", className)} {...rest} />
+  <input ref={ref} className={cx(fieldCls, width(className), "h-10", className)} {...rest} />
 ));
 
 export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(
-  ({ className, ...rest }, ref) => <textarea ref={ref} className={cx(fieldCls, "py-2 min-h-20", className)} {...rest} />,
+  ({ className, ...rest }, ref) => <textarea ref={ref} className={cx(fieldCls, width(className), "py-2 min-h-20", className)} {...rest} />,
 );
 
 export function Select({ className, children, ...rest }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select className={cx(fieldCls, "h-10 pr-8 appearance-auto", className)} {...rest}>
+    <select className={cx(fieldCls, width(className), "h-10 pr-8 appearance-auto", className)} {...rest}>
       {children}
     </select>
   );

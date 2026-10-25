@@ -12,6 +12,8 @@ pub struct AppState {
     pub db: Db,
     pub secrets: Secrets,
     pub bus: broadcast::Sender<Envelope>,
+    /// Shared HTTP client (Telegram, GitHub, npm registry, health checks).
+    pub http: reqwest::Client,
     pub runner: crate::runner::RunnerState,
     pub codex: crate::agents::codex::CodexManager,
     pub telegram: crate::telegram::TelegramState,

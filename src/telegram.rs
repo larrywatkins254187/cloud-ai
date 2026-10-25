@@ -15,7 +15,6 @@ use tokio::sync::broadcast::error::RecvError;
 
 #[derive(Default)]
 pub struct TelegramState {
-    client: reqwest::Client,
     /// request id → messages sent for it (message id, text)
     req_msgs: Mutex<HashMap<i64, Vec<(i64, String)>>>,
     /// request id → (question id → picked answers)
@@ -41,8 +40,7 @@ pub async fn call(st: &St, method: &str, body: Value) -> Result<Value> {
     let token = token(st).ok_or_else(|| anyhow!("Telegram bot token not set"))?;
     let url = format!("https://api.telegram.org/bot{token}/{method}");
     let resp = st
-        .telegram
-        .client
+        .http
         .post(&url)
         .timeout(Duration::from_secs(if method == "getUpdates" { 60 } else { 20 }))
         .json(&body)

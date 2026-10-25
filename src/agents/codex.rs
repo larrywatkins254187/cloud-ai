@@ -49,11 +49,11 @@ pub struct CodexManager {
 }
 
 impl CodexProc {
-    fn send(&self, v: Value) {
+    pub fn send(&self, v: Value) {
         let _ = self.stdin.send(v.to_string());
     }
 
-    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -69,7 +69,7 @@ impl CodexProc {
         }
     }
 
-    fn kill(&self) {
+    pub fn kill(&self) {
         self.alive.store(false, Ordering::SeqCst);
         if let Some(mut c) = self.child.lock().unwrap().take() {
             let _ = c.start_kill();
@@ -127,7 +127,7 @@ impl CodexManager {
     }
 }
 
-async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
+pub async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
     let bin = settings::get(&st.db, "codex_path");
     let mut child = Command::new(&bin)
         .arg("app-server")

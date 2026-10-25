@@ -28,12 +28,12 @@ const main = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/projects", label: "Projects", icon: FolderGit2 },
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
+  { to: "/extensions", label: "Skills & plugins", icon: Puzzle },
 ];
 
 const admin = [
   { to: "/terminal", label: "Terminal", icon: SquareTerminal },
   { to: "/admin/cli", label: "Claude & Codex", icon: Bot },
-  { to: "/admin/extensions", label: "Skills & plugins", icon: Puzzle },
   { to: "/admin/users", label: "Users", icon: Users },
   { to: "/admin/servers", label: "Servers", icon: Server },
   { to: "/admin/settings", label: "Settings", icon: Settings },
@@ -159,7 +159,7 @@ export default function Layout() {
         {!isChat && (
           <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-border bg-panel safe-bottom">
             <div className="grid grid-cols-4">
-              {[...main, { to: "/account", label: "Account", icon: UserRound }].map((n) => (
+              {[...main.slice(0, 3), { to: "/account", label: "Account", icon: UserRound }].map((n) => (
                 <NavLink
                   key={n.to}
                   to={n.to}
