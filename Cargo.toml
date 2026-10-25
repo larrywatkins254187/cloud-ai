@@ -7,6 +7,7 @@ description = "Self-hosted web panel to run and schedule Claude Code and Codex C
 
 [dependencies]
 anyhow = "1"
+parking_lot = "0.12"
 axum = { version = "0.8", features = ["ws", "multipart", "macros"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -27,7 +28,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 croner = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "multipart", "stream"] }
 rust-embed = "8"
 mime_guess = "2"
 tracing = "0.1"

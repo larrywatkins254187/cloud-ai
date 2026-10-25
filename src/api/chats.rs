@@ -378,3 +378,28 @@ pub async fn queue(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Jso
     drop(c);
     Ok(Json(json!({"runs": rows, "counts": runner::active_counts(&st)})))
 }
+
+/// Approvals and questions waiting for an answer, across the user's projects.
+pub async fn pending(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Json<Value>> {
+    let projects: Vec<i64> = store::list_projects(&st.db, &u)?.iter().map(|p| p.id).collect();
+    if projects.is_empty() {
+        return Ok(Json(json!([])));
+    }
+    let ids = projects.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let c = st.db.conn();
+    let mut q = c.prepare(&format!(
+        "SELECT r.id, r.chat_id, r.kind, r.data, r.created_at, c.title, p.name FROM requests r
+         JOIN chats c ON c.id=r.chat_id JOIN projects p ON p.id=c.project_id
+         WHERE r.status='pending' AND p.id IN ({ids}) ORDER BY r.id"
+    ))?;
+    let rows: Vec<Value> = q
+        .query_map([], |r| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?, "chat_id": r.get::<_, i64>(1)?, "kind": r.get::<_, String>(2)?,
+                "data": serde_json::from_str::<Value>(&r.get::<_, String>(3)?).unwrap_or(Value::Null),
+                "created_at": r.get::<_, String>(4)?, "chat_title": r.get::<_, String>(5)?, "project": r.get::<_, String>(6)?,
+            }))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(Json(Value::Array(rows)))
+}

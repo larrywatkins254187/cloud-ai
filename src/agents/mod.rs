@@ -3,7 +3,7 @@ pub mod codex;
 
 use crate::settings;
 use crate::state::St;
-use crate::store::{Chat, Project};
+use crate::store::Project;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -118,8 +118,4 @@ pub fn question(id: &str, header: &str, text: &str, multi: bool, other: bool, op
         "allow_other": other,
         "options": options.into_iter().map(|(l, d)| json!({"label": l, "description": d})).collect::<Vec<_>>(),
     })
-}
-
-pub fn chat_label(chat: &Chat) -> String {
-    format!("{} #{}", chat.title, chat.id)
 }

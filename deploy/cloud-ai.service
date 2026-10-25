@@ -1,0 +1,22 @@
+[Unit]
+Description=cloud-ai — web panel for Claude Code and Codex
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+Environment=CLOUD_AI_DATA=/var/lib/cloud-ai
+Environment=CLOUD_AI_BIND=127.0.0.1:8787
+# PATH must contain the folders of `claude`, `codex`, node and npm (install.sh fills this in).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/cloud-ai serve
+Restart=always
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=20
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

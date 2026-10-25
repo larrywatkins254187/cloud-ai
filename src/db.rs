@@ -1,12 +1,15 @@
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard};
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
+use std::sync::Arc;
 
 /// A single SQLite connection shared behind a mutex. Every query in this app is
-/// tiny, so one connection in WAL mode is plenty and keeps memory low.
+/// tiny, so one connection in WAL mode is plenty and keeps memory low. The lock
+/// is reentrant so a helper that queries while its caller holds the connection
+/// cannot deadlock.
 #[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>);
+pub struct Db(Arc<ReentrantMutex<Connection>>);
 
 const MIGRATIONS: &[&str] = &[
     // v1
@@ -204,18 +207,18 @@ impl Db {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
         )?;
-        let db = Db(Arc::new(Mutex::new(conn)));
+        let db = Db(Arc::new(ReentrantMutex::new(conn)));
         db.migrate()?;
         Ok(db)
     }
 
     fn migrate(&self) -> Result<()> {
-        let mut c = self.conn();
+        let c = self.conn();
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (i, sql) in MIGRATIONS.iter().enumerate() {
             let v = i as i64 + 1;
             if v > version {
-                let tx = c.transaction()?;
+                let tx = c.unchecked_transaction()?;
                 tx.execute_batch(sql)?;
                 tx.execute_batch(&format!("PRAGMA user_version={v}"))?;
                 tx.commit()?;
@@ -224,8 +227,8 @@ impl Db {
         Ok(())
     }
 
-    pub fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    pub fn conn(&self) -> ReentrantMutexGuard<'_, Connection> {
+        self.0.lock()
     }
 
     pub fn get_setting(&self, key: &str) -> Option<String> {

@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 0.2.0 (creates tag v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V="${GITHUB_REF_NAME#v}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          sed -i "0,/^version = .*/s//version = \"$V\"/" Cargo.toml
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web app
+        working-directory: web
+        run: npm ci && npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build binary
+        run: cargo build --release
+
+      - name: Package
+        run: |
+          name="cloud-ai-linux-${{ matrix.arch }}"
+          cp target/release/cloud-ai "$name"
+          ./"$name" version | grep -q "$VERSION"
+          sha256sum "$name" > "$name.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.arch }}
+          path: cloud-ai-linux-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Version
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V="${GITHUB_REF_NAME#v}"; fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: cloud-ai v${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: dist/*

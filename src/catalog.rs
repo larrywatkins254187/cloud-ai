@@ -73,8 +73,8 @@ fn save(st: &St, tool: &str, rows: &[(String, String, String, Value, Option<Stri
     if rows.is_empty() {
         return Ok(());
     }
-    let mut c = st.db.conn();
-    let tx = c.transaction()?;
+    let c = st.db.conn();
+    let tx = c.unchecked_transaction()?;
     tx.execute("DELETE FROM models WHERE tool=?1", [tool])?;
     for (i, (id, name, desc, efforts, def_eff, is_default)) in rows.iter().enumerate() {
         tx.execute(
