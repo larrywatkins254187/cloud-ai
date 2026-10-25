@@ -30,6 +30,14 @@ pub const DEFAULTS: &[(&str, &str)] = &[
 pub const SECRET_KEYS: &[&str] = &["telegram_token"];
 
 pub fn get(db: &Db, key: &str) -> String {
+    if key == "public_url" {
+        // The installer passes the domain so Telegram links work before anyone opens Settings.
+        let stored = db.get_setting(key).unwrap_or_default();
+        if stored.is_empty() {
+            return std::env::var("CLOUD_AI_PUBLIC_URL").unwrap_or_default();
+        }
+        return stored;
+    }
     db.get_setting(key).unwrap_or_else(|| {
         DEFAULTS.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string()).unwrap_or_default()
     })

@@ -30,7 +30,7 @@ async fn run(st: St, user: User, mut socket: WebSocket) {
                     }
                     Err(RecvError::Closed) => break,
                 };
-                let visible = if env.public || user.is_admin() {
+                let visible = if user.is_admin() {
                     true
                 } else if let Some(pid) = env.project_id {
                     let entry = access.get(&pid).copied();

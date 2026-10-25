@@ -221,7 +221,19 @@ async fn execute(st: &St, run_id: i64) -> Result<()> {
         crate::agents::codex::run_turn(st, &chat, &project, &run, &atts).await
     } else {
         let session = ClaudeSession::get_or_spawn(st, &chat, &project).await?;
-        session.run_turn(st, &run, &atts).await
+        let out = session.run_turn(st, &run, &atts).await;
+        if out.error.as_deref().map(|e| e.contains("No conversation found")).unwrap_or(false) {
+            // The saved session is gone (deleted transcript, other machine…): start a fresh one.
+            drop_session(st, chat.id);
+            st.db.conn().execute("UPDATE chats SET cli_session_id=NULL WHERE id=?1", [chat.id])?;
+            let note = insert_message(&st.db, chat.id, Some(run.id), "system", &json!({"text": "The previous Claude session could not be resumed, so a new one was started."}))?;
+            st.emit_project(chat.project_id, Event::Message { message: note });
+            let chat = get_chat(&st.db, chat.id)?;
+            let session = ClaudeSession::get_or_spawn(st, &chat, &project).await?;
+            session.run_turn(st, &run, &atts).await
+        } else {
+            out
+        }
     };
     finish(st, run_id, outcome)
 }
@@ -439,13 +451,4 @@ pub fn active_counts(st: &St) -> Value {
         "queued": count("SELECT COUNT(*) FROM runs WHERE status='queued'"),
         "waiting": count("SELECT COUNT(*) FROM requests WHERE status='pending'"),
     })
-}
-
-pub fn any_active(st: &St) -> bool {
-    let n: i64 = st
-        .db
-        .conn()
-        .query_row("SELECT COUNT(*) FROM runs WHERE status IN ('running','queued')", [], |r| r.get(0))
-        .unwrap_or(1);
-    n > 0
 }

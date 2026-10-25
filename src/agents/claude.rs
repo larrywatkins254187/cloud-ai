@@ -380,6 +380,24 @@ impl ClaudeSession {
                     + u["cache_read_input_tokens"].as_i64().unwrap_or(0);
                 let output = u["output_tokens"].as_i64().unwrap_or(0);
                 let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"] != "success";
+                if is_error && v["num_turns"].as_i64() == Some(0) && v["result"].as_str().unwrap_or("").is_empty() {
+                    // Failed before doing anything (e.g. the session to resume is gone): the reason
+                    // is on stderr, which may still be arriving.
+                    let s = self.clone();
+                    let subtype = v["subtype"].as_str().unwrap_or("error").to_string();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        let err = s.stderr.lock().unwrap().trim().to_string();
+                        let turn = s.turn.lock().unwrap().take();
+                        if let Some(mut t) = turn {
+                            if let Some(done) = t.done.take() {
+                                let msg = if err.is_empty() { format!("Stopped: {subtype}") } else { tail(&err, 1500) };
+                                let _ = done.send(TurnOutcome::error(msg));
+                            }
+                        }
+                    });
+                    return;
+                }
                 let turn = self.turn.lock().unwrap().take();
                 if let Some(mut t) = turn {
                     let result_text = v["result"].as_str().map(|s| s.to_string()).or(Some(t.last_text.clone()));
