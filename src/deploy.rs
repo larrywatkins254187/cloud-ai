@@ -138,7 +138,10 @@ async fn run(st: &St, id: i64, project_id: i64, rollback_to: Option<String>, log
     match p.deploy_target.as_str() {
         "local" => {
             if let Some(target) = &rollback_to {
-                // Keep the current state reachable before moving back.
+                // Keep the current state (including uncommitted work) reachable before moving back.
+                if git::is_dirty(&root).await {
+                    git::commit_all(&root, "cloud-ai: uncommitted changes before rollback").await?;
+                }
                 let backup = format!("cloud-ai/backup-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
                 git::must(&root, &["branch", &backup]).await?;
                 log.line(&format!("Saved current state as branch {backup}"));

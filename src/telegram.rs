@@ -24,6 +24,8 @@ pub struct TelegramState {
     /// telegram message id → (request id, question index), for typed replies
     reply_map: Mutex<HashMap<i64, (i64, usize)>>,
     topic_lock: tokio::sync::Mutex<()>,
+    /// deploys whose "started" message was already sent
+    deploy_started: Mutex<HashSet<i64>>,
 }
 
 fn token(st: &St) -> Option<String> {
@@ -38,7 +40,9 @@ fn group(st: &St) -> Option<String> {
 
 pub async fn call(st: &St, method: &str, body: Value) -> Result<Value> {
     let token = token(st).ok_or_else(|| anyhow!("Telegram bot token not set"))?;
-    let url = format!("https://api.telegram.org/bot{token}/{method}");
+    // CLOUD_AI_TELEGRAM_API points the bot at another Bot API server (tests, self-hosted API).
+    let base = std::env::var("CLOUD_AI_TELEGRAM_API").unwrap_or_else(|_| "https://api.telegram.org".into());
+    let url = format!("{}/bot{token}/{method}", base.trim_end_matches('/'));
     let resp = st
         .http
         .post(&url)
@@ -125,7 +129,13 @@ fn tool_line(chat: &Chat) -> String {
     let tool = if chat.tool == "codex" { "Codex" } else { "Claude Code" };
     let model = if chat.model.is_empty() { "default model" } else { &chat.model };
     let effort = if chat.effort.is_empty() { String::new() } else { format!(" · {}", chat.effort) };
-    format!("{tool} · {}{effort} · {} mode", html_escape(model), chat.permission_mode)
+    let mode = match chat.permission_mode.as_str() {
+        "edits" => "auto-edit",
+        "ask" => "ask before changes",
+        "plan" => "plan only",
+        _ => "full access",
+    };
+    format!("{tool} · {}{effort} · {mode}", html_escape(model))
 }
 
 fn fmt_duration(run: &Run) -> String {
@@ -199,7 +209,7 @@ async fn on_event(st: &St, ev: Event) -> Result<()> {
             let project = get_project(&st.db, chat.project_id)?;
             let mut stats = vec![fmt_duration(&run)];
             if let Some(c) = run.cost_usd.filter(|c| *c > 0.0) {
-                stats.push(format!("${c:.2}"));
+                stats.push(if c < 0.01 { "<$0.01".to_string() } else { format!("${c:.2}") });
             }
             let tok = run.input_tokens.unwrap_or(0) + run.output_tokens.unwrap_or(0);
             if tok > 0 {
@@ -232,6 +242,9 @@ async fn on_event(st: &St, ev: Event) -> Result<()> {
             let project = get_project(&st.db, deploy.project_id)?;
             let what = if deploy.kind == "rollback" { "Rollback" } else { "Deploy" };
             let sha = deploy.commit_sha.as_deref().map(|s| format!(" <code>{}</code>", &s[..s.len().min(8)])).unwrap_or_default();
+            if deploy.status == "running" && !st.telegram.deploy_started.lock().unwrap().insert(deploy.id) {
+                return Ok(());
+            }
             let text = match deploy.status.as_str() {
                 "running" => format!("🚀 {what} of <b>{}</b> started by {}{sha}", html_escape(&project.name), html_escape(&deploy.triggered_by)),
                 "success" => format!(
