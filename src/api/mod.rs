@@ -39,6 +39,7 @@ pub fn router() -> Router<St> {
         .route("/api/chats/{id}/merge", post(chats::merge))
         .route("/api/runs/{id}/cancel", post(chats::cancel_run))
         .route("/api/requests/{id}/answer", post(chats::answer))
+        .route("/api/requests/pending", get(chats::pending))
         .route("/api/uploads", post(chats::upload))
         .route("/api/uploads/{id}", get(chats::download))
         .route("/api/queue", get(chats::queue))

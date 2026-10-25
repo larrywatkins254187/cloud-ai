@@ -366,6 +366,7 @@ dependencies = [
  "hmac",
  "libc",
  "mime_guess",
+ "parking_lot",
  "portable-pty",
  "qrcode",
  "rand 0.8.8",
