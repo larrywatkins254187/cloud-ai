@@ -3,6 +3,15 @@ use axum::body::Body;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
+use std::borrow::Cow;
+
+/// Embedded files are static in release builds: serve them without copying.
+fn body(data: Cow<'static, [u8]>) -> Body {
+    match data {
+        Cow::Borrowed(b) => Body::from(axum::body::Bytes::from_static(b)),
+        Cow::Owned(v) => Body::from(v),
+    }
+}
 
 #[derive(RustEmbed)]
 #[folder = "web/dist"]
@@ -21,7 +30,7 @@ pub async fn serve(uri: Uri) -> Response {
         return Response::builder()
             .header(header::CONTENT_TYPE, mime.as_ref())
             .header(header::CACHE_CONTROL, cache)
-            .body(Body::from(f.data.into_owned()))
+            .body(body(f.data))
             .unwrap();
     }
     if path.starts_with("assets/") || path.contains('.') && !path.ends_with(".html") {
@@ -32,7 +41,7 @@ pub async fn serve(uri: Uri) -> Response {
         Some(f) => Response::builder()
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .header(header::CACHE_CONTROL, "no-cache")
-            .body(Body::from(f.data.into_owned()))
+            .body(body(f.data))
             .unwrap(),
         None => (StatusCode::NOT_FOUND, "frontend not built").into_response(),
     }

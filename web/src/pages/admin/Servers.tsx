@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ErrorState, QueryStatus, SkeletonList } from "../../components/Loadable";
 import { Copy, Pencil, Plug, Plus, Server as ServerIcon, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, useAction, useConfirm, useToast } from "../../components/ui";
@@ -103,8 +104,8 @@ export default function Servers() {
       />
       <Card className="p-4 mb-4 space-y-2">
         <div className="text-sm font-medium">This panel's public SSH key</div>
-        {key.error ? (
-          <div className="text-sm text-danger">{(key.error as Error).message}</div>
+        {key.isError && !key.data ? (
+          <ErrorState compact error={key.error} onRetry={key.refetch} retrying={key.isFetching} />
         ) : (
           <div className="flex gap-2 items-start">
             <pre className="flex-1 text-[11px] font-mono bg-code rounded-lg p-2.5 break-all whitespace-pre-wrap">{key.data?.public_key ?? "…"}</pre>
@@ -120,7 +121,8 @@ export default function Servers() {
           </div>
         )}
       </Card>
-      {q.data?.length === 0 ? (
+      <QueryStatus q={q} skeleton={<SkeletonList rows={3} />} />
+      {q.data === undefined ? null : q.data.length === 0 ? (
         <Card>
           <Empty icon={<ServerIcon className="size-8" />} title="No servers yet" />
         </Card>

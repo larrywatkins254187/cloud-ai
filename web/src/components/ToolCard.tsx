@@ -15,7 +15,7 @@ import {
   Wrench,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 import type { Msg } from "../lib/types";
 import { Diff } from "./Diff";
 import { cx } from "./ui";
@@ -101,10 +101,23 @@ export function Todos({ todos }: { todos: { content?: string; step?: string; sta
   );
 }
 
-export function ToolCard({ use, result, children }: { use: Msg; result?: Msg; children?: React.ReactNode }) {
+export const ToolCard = memo(function ToolCard({
+  use,
+  result,
+  children,
+  badge,
+  defaultOpen = false,
+}: {
+  use: Msg;
+  result?: Msg;
+  children?: React.ReactNode;
+  /** Replaces the pending/error indicator (e.g. a sub-agent's status). */
+  badge?: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
   const name: string = use.data.name ?? "tool";
   const input = use.data.input;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const Icon = icon(name);
   const pending = !result;
   const err = result?.data?.is_error;
@@ -128,7 +141,7 @@ export function ToolCard({ use, result, children }: { use: Msg; result?: Msg; ch
         <span className="font-medium shrink-0">{name.startsWith("mcp__") ? name.split("__").slice(1).join(" · ") : name}</span>
         <span className="truncate text-muted font-mono text-xs">{toolSummary(name, input)}</span>
         <span className="flex-1" />
-        {pending ? <Loader2 className="size-3.5 animate-spin text-muted shrink-0" /> : err ? <XCircle className="size-4 text-danger shrink-0" /> : null}
+        {badge ?? (pending ? <Loader2 className="size-3.5 animate-spin text-muted shrink-0" /> : err ? <XCircle className="size-4 text-danger shrink-0" /> : null)}
       </button>
       {open && (
         <div className="border-t border-border p-3 space-y-2">
@@ -154,4 +167,4 @@ export function ToolCard({ use, result, children }: { use: Msg; result?: Msg; ch
       )}
     </div>
   );
-}
+});

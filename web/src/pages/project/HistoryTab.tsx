@@ -1,8 +1,9 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { queryGate, SkeletonList } from "../../components/Loadable";
 import { ChevronDown, ChevronRight, History, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { deployTone, useTicker } from "../../components/DeployStatus";
-import { Badge, Button, Card, cx, Empty, Spinner, useAction, useConfirm } from "../../components/ui";
+import { Badge, Button, Card, cx, Empty, useAction, useConfirm } from "../../components/ui";
 import { api } from "../../lib/api";
 import { dateTime, duration } from "../../lib/format";
 import type { Deploy, Project } from "../../lib/types";
@@ -51,8 +52,8 @@ export default function HistoryTab({ project }: { project: Project }) {
     if (r) setOpen(r.id);
   };
 
-  if (q.isLoading) return <Spinner />;
-  if (q.error) return <div className="text-danger text-sm">{(q.error as Error).message}</div>;
+  const gate = queryGate(q, <SkeletonList rows={5} className="w-full" />);
+  if (gate) return gate;
   if (!all.length)
     return (
       <Card>

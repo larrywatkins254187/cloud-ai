@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryStatus } from "../../components/Loadable";
 import { KeyRound, Pencil, Plus, ShieldOff, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Badge, Button, Card, Field, IconButton, Input, Modal, PageHeader, Select, Toggle, useAction, useConfirm } from "../../components/ui";
@@ -78,6 +79,7 @@ function UserModal({ user, onClose }: { user?: User; onClose: () => void }) {
               );
             })}
             {all.data?.length === 0 && <span className="text-sm text-muted">No projects yet</span>}
+            {all.data === undefined && <QueryStatus q={all} compact title="Projects" skeleton={<span className="text-sm text-muted">Loading projects…</span>} />}
           </div>
         </div>
       )}
@@ -107,6 +109,7 @@ export default function Users() {
         }
       />
       <Card className="divide-y divide-border">
+        <QueryStatus q={q} />
         {q.data?.map((u) => (
           <div key={u.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
             <div className="min-w-0 flex-1">

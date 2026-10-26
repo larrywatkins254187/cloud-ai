@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryStatus } from "../../components/Loadable";
 import { ChevronRight, File, FilePlus, Folder, FolderPlus, Pencil, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button, Card, cx, IconButton, Spinner, useAction, useConfirm } from "../../components/ui";
+import { Button, Card, cx, IconButton, useAction, useConfirm } from "../../components/ui";
 import { api, qs } from "../../lib/api";
 import { bytes } from "../../lib/format";
 import type { Project } from "../../lib/types";
@@ -71,8 +72,7 @@ export default function FilesTab({ project }: { project: Project }) {
             <RefreshCw className="size-4" />
           </IconButton>
         </div>
-        {list.isLoading && <Spinner />}
-        {list.error && <div className="p-4 text-sm text-danger">{(list.error as Error).message}</div>}
+        <QueryStatus q={list} />
         <div className="divide-y divide-border max-h-[65dvh] overflow-y-auto scroll-thin">
           {list.data?.items.map((it) => (
             <div key={it.path} className={cx("group flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-panel-2", file === it.path && "bg-accent-soft")}>
@@ -124,7 +124,7 @@ function Editor({ base, path, onClose }: { base: string; path: string; onClose: 
           <X className="size-4" />
         </IconButton>
       </div>
-      {q.isLoading && <Spinner />}
+      <QueryStatus q={q} />
       {q.data?.binary ? (
         <div className="p-6 text-sm text-muted">{q.data.too_large ? "File is too large to edit here." : "Binary file — not editable."}</div>
       ) : (

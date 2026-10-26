@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryGate } from "../../components/Loadable";
 import { ArrowDownToLine, ArrowUpFromLine, GitBranch, GitCommitHorizontal, RefreshCw, Undo2 } from "lucide-react";
 import { useState } from "react";
 import { Diff } from "../../components/Diff";
@@ -25,7 +26,8 @@ export default function GitTab({ project, chatId }: { project: Project; chatId?:
   const qc = useQueryClient();
   const reload = () => qc.invalidateQueries({ queryKey: ["git", project.id] });
 
-  if (status.isLoading) return <Spinner page />;
+  const gate = queryGate(status);
+  if (gate) return gate;
   if (!status.data?.repo)
     return (
       <Card>

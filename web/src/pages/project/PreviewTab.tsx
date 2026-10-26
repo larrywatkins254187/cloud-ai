@@ -60,7 +60,13 @@ function DevServer({ project }: { project: Project }) {
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="font-medium">Dev server</span>
-        {d?.running ? <Badge tone="ok">running · port {d.port ?? "?"}</Badge> : <Badge>{d?.exit ? `stopped (${d.exit})` : "stopped"}</Badge>}
+        {d === undefined ? (
+          <Badge tone={q.isError ? "danger" : "neutral"}>{q.isError ? "status unavailable" : "checking…"}</Badge>
+        ) : d.running ? (
+          <Badge tone="ok">running · port {d.port ?? "?"}</Badge>
+        ) : (
+          <Badge>{d.exit ? `stopped (${d.exit})` : "stopped"}</Badge>
+        )}
         <code className="text-xs text-muted truncate max-w-xs">{project.dev_command}</code>
         <div className="flex-1" />
         {d?.running ? (
@@ -68,7 +74,7 @@ function DevServer({ project }: { project: Project }) {
             Stop
           </Button>
         ) : (
-          <Button size="sm" variant="primary" icon={<Play className="size-3.5" />} loading={busy} onClick={async () => (await run(() => api.post(`/api/projects/${project.id}/dev/start`)), qc.invalidateQueries({ queryKey: ["dev", project.id] }))}>
+          <Button size="sm" variant="primary" icon={<Play className="size-3.5" />} loading={busy} disabled={d === undefined} onClick={async () => (await run(() => api.post(`/api/projects/${project.id}/dev/start`)), qc.invalidateQueries({ queryKey: ["dev", project.id] }))}>
             Start
           </Button>
         )}

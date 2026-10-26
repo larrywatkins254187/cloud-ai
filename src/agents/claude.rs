@@ -10,6 +10,7 @@ use crate::util::{tail, truncate};
 use anyhow::{Context, Result};
 use base64::Engine;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,6 +38,42 @@ pub struct ClaudeSession {
     total_cost: Mutex<f64>,
     stderr: Mutex<String>,
     ctrl_seq: AtomicU64,
+    /// Sub-agent tool_use id ↔ Claude task id (used by `stop_task`).
+    tasks: Mutex<Tasks>,
+}
+
+#[derive(Default)]
+struct Tasks {
+    by_ref: HashMap<String, String>,
+    by_task: HashMap<String, String>,
+}
+
+impl Tasks {
+    fn link(&mut self, tool_use_id: &str, task_id: &str) {
+        if tool_use_id.is_empty() || task_id.is_empty() {
+            return;
+        }
+        self.by_ref.insert(tool_use_id.to_string(), task_id.to_string());
+        self.by_task.insert(task_id.to_string(), tool_use_id.to_string());
+    }
+}
+
+/// The agent id Claude reports in a Task/Agent tool result ("agentId: a1b2c3…").
+fn agent_id_in(output: &str) -> Option<&str> {
+    let i = output.find("agentId: ")? + "agentId: ".len();
+    let id: &str = &output[i..];
+    let end = id.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).unwrap_or(id.len());
+    (end > 0).then(|| &id[..end])
+}
+
+/// Claude task status → the status shown in the panel.
+fn task_status(s: &str) -> &'static str {
+    match s {
+        "completed" => "completed",
+        "failed" => "failed",
+        "stopped" | "killed" | "cancelled" => "stopped",
+        _ => "running",
+    }
 }
 
 fn spawn_key(chat: &Chat) -> String {
@@ -59,6 +96,16 @@ impl ClaudeSession {
         if let Some(mut c) = self.child.lock().unwrap().take() {
             let _ = c.start_kill();
         }
+    }
+
+    /// Stop one sub-agent. Returns false when its task id is unknown (older CLI or
+    /// already finished), so the caller can fall back to interrupting the turn.
+    pub fn stop_task(&self, tool_use_id: &str) -> bool {
+        let task = self.tasks.lock().unwrap().by_ref.get(tool_use_id).cloned();
+        let Some(task_id) = task else { return false };
+        let id = format!("stop-{}", self.ctrl_seq.fetch_add(1, Ordering::SeqCst));
+        self.send(json!({"type":"control_request","request_id": id, "request": {"subtype":"stop_task","task_id": task_id}}));
+        true
     }
 
     pub fn interrupt(&self) {
@@ -148,6 +195,7 @@ impl ClaudeSession {
             last_used: Mutex::new(Instant::now()),
             total_cost: Mutex::new(0.0),
             stderr: Mutex::new(String::new()),
+            tasks: Mutex::new(Tasks::default()),
             ctrl_seq: AtomicU64::new(1),
         });
 
@@ -279,6 +327,35 @@ impl ClaudeSession {
                     }
                 }
                 "compact_boundary" => self.store(st, "system", json!({"text": "Conversation compacted to free context"})),
+                "task_started" => {
+                    let task_id = v["task_id"].as_str().unwrap_or("");
+                    let r = v["tool_use_id"].as_str().unwrap_or("");
+                    self.tasks.lock().unwrap().link(r, task_id);
+                    self.store(
+                        st,
+                        "agent",
+                        json!({"ref": r, "task_id": task_id, "status": "running", "description": v["description"], "task_type": v["task_type"]}),
+                    );
+                }
+                "task_progress" => {
+                    let task_id = v["task_id"].as_str().unwrap_or("");
+                    let r = v["tool_use_id"].as_str().map(String::from).or_else(|| self.tasks.lock().unwrap().by_task.get(task_id).cloned());
+                    let u = &v["usage"];
+                    let p = json!({
+                        "ref": r, "task_id": task_id, "last_tool": v["last_tool_name"], "description": v["description"],
+                        "tokens": u["total_tokens"], "tool_uses": u["tool_uses"], "duration_ms": u["duration_ms"],
+                    });
+                    self.delta(st, "agent", &p.to_string());
+                }
+                "task_notification" => {
+                    let task_id = v["task_id"].as_str().unwrap_or("");
+                    let r = v["tool_use_id"].as_str().map(String::from).or_else(|| self.tasks.lock().unwrap().by_task.get(task_id).cloned());
+                    self.store(
+                        st,
+                        "agent",
+                        json!({"ref": r, "task_id": task_id, "status": task_status(v["status"].as_str().unwrap_or("")), "summary": v["summary"]}),
+                    );
+                }
                 _ => {}
             },
             "stream_event" => {
@@ -352,6 +429,16 @@ impl ClaudeSession {
                                     .join("\n"),
                                 other => other.to_string(),
                             };
+                            let mut launched = None;
+                            if parent.is_null() {
+                                // Background agents report their id right away; it is also their task id.
+                                if let (Some(r), Some(aid)) = (b["tool_use_id"].as_str(), agent_id_in(&output)) {
+                                    self.tasks.lock().unwrap().link(r, aid);
+                                    if output.contains("Async agent launched") {
+                                        launched = Some(json!({"ref": r, "task_id": aid, "status": "running", "background": true}));
+                                    }
+                                }
+                            }
                             self.store(
                                 st,
                                 "tool_result",
@@ -362,6 +449,9 @@ impl ClaudeSession {
                                     "parent": parent,
                                 }),
                             );
+                            if let Some(l) = launched {
+                                self.store(st, "agent", l);
+                            }
                         }
                     }
                 }

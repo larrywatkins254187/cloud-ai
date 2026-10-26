@@ -1,7 +1,8 @@
+import { queryGate } from "../components/Loadable";
 import { useQuery } from "@tanstack/react-query";
 import { FileCode2, GitBranch, Globe, History, MessageSquare, Rocket, Settings } from "lucide-react";
 import { useParams, useSearchParams } from "react-router";
-import { Badge, PageHeader, Spinner, Tabs } from "../components/ui";
+import { Badge, PageHeader, Tabs } from "../components/ui";
 import { api } from "../lib/api";
 import { useIsAdmin } from "../lib/auth";
 import type { Project as P } from "../lib/types";
@@ -21,9 +22,9 @@ export default function Project() {
   const tab = (sp.get("tab") as Tab) || "chats";
   const admin = useIsAdmin();
   const q = useQuery({ queryKey: ["project", id], queryFn: () => api.get<P>(`/api/projects/${id}`) });
-  if (q.isLoading) return <Spinner page />;
-  if (q.error || !q.data) return <div className="text-danger text-sm">{(q.error as Error)?.message ?? "Not found"}</div>;
-  const p = q.data;
+  const gate = queryGate(q);
+  if (gate) return gate;
+  const p = q.data!;
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "chats", label: "Chats", icon: <MessageSquare className="size-4" /> },
     { id: "files", label: "Files", icon: <FileCode2 className="size-4" /> },

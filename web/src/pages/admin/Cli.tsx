@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryGate } from "../../components/Loadable";
 import { CheckCircle2, Download, ExternalLink, LogIn, LogOut, RefreshCw, XCircle } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
@@ -39,6 +40,8 @@ export default function Cli() {
   // Logged-in account email: from the CLI's auth status, else the account it last reported.
   const claudeEmail = claudeIn ? (s?.claude?.auth?.email ?? s?.claude?.account?.email ?? null) : null;
   const codexEmail = codexIn ? (s?.codex?.auth?.email ?? s?.codex?.account?.account?.email ?? null) : null;
+  const gate = queryGate(q);
+  if (gate) return gate;
   return (
     <>
       <PageHeader

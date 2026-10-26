@@ -19,6 +19,16 @@ pub struct NewChat {
     pub schedule_id: Option<i64>,
 }
 
+/// Chat title from the first line of a prompt.
+pub fn title_from(prompt: &str) -> String {
+    let first = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("New chat").trim();
+    let mut t: String = first.chars().take(60).collect();
+    if first.chars().count() > 60 {
+        t.push('…');
+    }
+    t
+}
+
 pub fn validate_tool(tool: &str) -> Result<()> {
     if tool != "claude" && tool != "codex" {
         bail!("tool must be claude or codex");

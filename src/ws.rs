@@ -48,8 +48,8 @@ async fn run(st: St, user: User, mut socket: WebSocket) {
                 if !visible {
                     continue;
                 }
-                let Ok(text) = serde_json::to_string(&env.event) else { continue };
-                if socket.send(Message::Text(text.into())).await.is_err() {
+                let text = env.json();
+                if socket.send(Message::Text(text.as_ref().into())).await.is_err() {
                     break;
                 }
             }

@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Bot, Cpu, Hourglass, MemoryStick, MessageSquare, Play, RefreshCw } from "lucide-react";
 import { DeploysCard } from "../components/DeployStatus";
+import { ErrorState, Loadable, SkeletonCards, SkeletonList } from "../components/Loadable";
 import { Link } from "react-router";
 import { Badge, Card, cx, Empty, PageHeader, StatusDot } from "../components/ui";
 import { api } from "../lib/api";
@@ -156,8 +157,10 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader title={`Hi ${user.username}`} subtitle="What is running on your server right now" />
-      {s && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div className="mb-5">
+      <Loadable q={sys} skeleton={<SkeletonCards />} compact title="Server status">
+        {(s: any) => (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Meter label="CPU" value={s.system.cpu_percent} max={100} unit="%" icon={<Cpu className="size-4" />} />
           <Meter
             label="RAM used"
@@ -185,9 +188,13 @@ export default function Dashboard() {
             </div>
           </Card>
         </div>
-      )}
+        )}
+      </Loadable>
+      </div>
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-4">
+          {pending.isError && !pending.data && <ErrorState compact title="Pending answers" error={pending.error} onRetry={pending.refetch} retrying={pending.isFetching} />}
+          {queue.isError && !queue.data && <ErrorState compact title="Queue" error={queue.error} onRetry={queue.refetch} retrying={queue.isFetching} />}
           {(pending.data?.length ?? 0) > 0 && (
             <Card>
               <div className="px-4 py-3 border-b border-border text-sm font-medium text-warn">Waiting for your answer</div>
@@ -226,17 +233,21 @@ export default function Dashboard() {
           )}
           <Card>
             <div className="px-4 py-3 border-b border-border text-sm font-medium">Recent chats</div>
-            {chats.data?.length ? (
-              <div className="divide-y divide-border">
-                {chats.data.slice(0, 20).map((c) => (
-                  <ChatRow key={c.id} c={c} showProject={pname(c.project_id)} />
-                ))}
-              </div>
-            ) : (
-              <Empty icon={<MessageSquare className="size-8" />} title="No chats yet">
-                Open a project and start a chat with Claude Code or Codex.
-              </Empty>
-            )}
+            <Loadable q={chats} skeleton={<SkeletonList rows={5} className="border-0 rounded-none" />}>
+              {(list) =>
+                list.length ? (
+                  <div className="divide-y divide-border">
+                    {list.slice(0, 20).map((c) => (
+                      <ChatRow key={c.id} c={c} showProject={pname(c.project_id)} />
+                    ))}
+                  </div>
+                ) : (
+                  <Empty icon={<MessageSquare className="size-8" />} title="No chats yet">
+                    Open a project and start a chat with Claude Code or Codex.
+                  </Empty>
+                )
+              }
+            </Loadable>
           </Card>
         </div>
         <div className="space-y-4">

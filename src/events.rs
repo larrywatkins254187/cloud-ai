@@ -1,5 +1,6 @@
 use crate::store::{Chat, Deploy, Message, Request, Run};
 use serde::Serialize;
+use std::sync::{Arc, OnceLock};
 
 /// Everything that happens in the app goes through this bus. The WebSocket hub
 /// forwards events to browsers (filtered by project access) and the Telegram
@@ -27,13 +28,18 @@ pub struct Envelope {
     /// Project the event belongs to; `None` = visible to admins only.
     pub project_id: Option<i64>,
     pub event: Event,
+    /// JSON of the event, built once and shared by every browser connection.
+    json: Arc<OnceLock<Arc<str>>>,
 }
 
 impl Envelope {
     pub fn project(project_id: i64, event: Event) -> Self {
-        Envelope { project_id: Some(project_id), event }
+        Envelope { project_id: Some(project_id), event, json: Default::default() }
     }
     pub fn admin(event: Event) -> Self {
-        Envelope { project_id: None, event }
+        Envelope { project_id: None, event, json: Default::default() }
+    }
+    pub fn json(&self) -> Arc<str> {
+        self.json.get_or_init(|| serde_json::to_string(&self.event).unwrap_or_default().into()).clone()
     }
 }

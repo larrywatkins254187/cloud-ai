@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryStatus, SkeletonList } from "../components/Loadable";
 import { ArrowDown, ArrowUp, CalendarClock, Pencil, Play, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -315,6 +316,7 @@ export default function Schedules() {
           </Button>
         }
       />
+      <QueryStatus q={q} skeleton={<SkeletonList rows={3} />} />
       {q.data?.schedules.length === 0 && (
         <Card>
           <Empty icon={<CalendarClock className="size-8" />} title="No schedules yet">

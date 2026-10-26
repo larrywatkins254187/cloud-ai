@@ -26,6 +26,8 @@ pub struct TelegramState {
     topic_lock: tokio::sync::Mutex<()>,
     /// deploys whose "started" message was already sent
     deploy_started: Mutex<HashSet<i64>>,
+    /// `/new` picker message id → first prompt typed after the command
+    pending_new: Mutex<HashMap<i64, String>>,
 }
 
 fn token(st: &St) -> Option<String> {
@@ -168,6 +170,10 @@ async fn event_loop(st: St) {
             Err(RecvError::Lagged(_)) => continue,
             Err(RecvError::Closed) => return,
         };
+        // Streaming deltas and logs are most of the traffic and never reach Telegram.
+        if matches!(env.event, Event::Delta { .. } | Event::DeployLog { .. } | Event::Message { .. } | Event::ChatUpdated { .. } | Event::RunQueued { .. }) {
+            continue;
+        }
         if token(&st).is_none() || group(&st).is_none() {
             continue;
         }
@@ -192,10 +198,15 @@ async fn on_event(st: &St, ev: Event) -> Result<()> {
             send(st, Some(&chat), &text, None).await?;
         }
         Event::RunStarted { run } => {
+            let chat = get_chat(&st.db, run.chat_id)?;
+            if run.source == "telegram" {
+                // The prompt is already in the topic; just show that the agent is working.
+                spawn_typing(st.clone(), run.id, chat.tg_topic_id.filter(|t| *t > 0));
+                return Ok(());
+            }
             if !settings::get_bool(&st.db, "telegram_send_prompts") {
                 return Ok(());
             }
-            let chat = get_chat(&st.db, run.chat_id)?;
             let by = store::username(&st.db, run.user_id);
             let icon = if run.source == "schedule" { "⏰" } else { "▶️" };
             let att = run.attachments.as_array().map(|a| a.len()).unwrap_or(0);
@@ -225,15 +236,25 @@ async fn on_event(st: &St, ev: Event) -> Result<()> {
             let stats = stats.into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
             let (text, kb) = match run.status.as_str() {
                 "done" => {
-                    let body = if settings::get_bool(&st.db, "telegram_send_results") {
-                        format!("\n\n{}", html_escape(&truncate(run.result_text.as_deref().unwrap_or(""), 3200)))
-                    } else {
-                        String::new()
-                    };
                     let kb = project
                         .deployable()
                         .then(|| json!([[{"text": "🚀 Deploy", "callback_data": format!("dp:{}", project.id)}]]));
-                    (format!("✅ <b>Done</b> · {stats}{body}{}", link(st, &format!("/chats/{}", chat.id))), kb)
+                    let footer = format!("✅ <b>Done</b> · {stats}{}", link(st, &format!("/chats/{}", chat.id)));
+                    let answer = run.result_text.as_deref().unwrap_or("").trim();
+                    // Prompts sent from Telegram always get their answer back there.
+                    if !answer.is_empty() && (run.source == "telegram" || settings::get_bool(&st.db, "telegram_send_results")) {
+                        let chunks = answer_chunks(answer);
+                        let last = chunks.len() - 1;
+                        for (i, c) in chunks.into_iter().enumerate() {
+                            if i == last {
+                                send(st, Some(&chat), &format!("{c}\n\n{footer}"), kb.clone()).await?;
+                            } else {
+                                send(st, Some(&chat), &c, None).await?;
+                            }
+                        }
+                        return Ok(());
+                    }
+                    (footer, kb)
                 }
                 "cancelled" => (format!("⏹ <b>Stopped</b> · {stats}"), None),
                 _ => (
@@ -527,7 +548,29 @@ async fn on_update(st: &St, u: &Value) -> Result<()> {
             .await?;
         }
         "/help" | "/start" => {
-            reply(st, msg, "/deploy — deploy a project\n/status — what is running\n/id — show chat and user ids\n\nApprovals and questions from Claude/Codex arrive here with buttons; reply to a question to type a custom answer.", None).await?;
+            reply(st, msg, "/new [prompt] — start a new chat (pick project and tool)\n/stop — stop the running prompt in this topic\n/deploy — deploy a project\n/status — what is running\n/id — show chat and user ids\n\nWrite in a chat's topic to send the next prompt to that chat. Approvals and questions arrive with buttons; reply to a question to type a custom answer.", None).await?;
+        }
+        "/new" => {
+            let prompt = text.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim().to_string();
+            new_chat_picker(st, msg, prompt).await?;
+        }
+        "/stop" => {
+            let Some(chat) = topic_of(msg).and_then(|t| chat_for_topic(st, t)) else {
+                reply(st, msg, "Use /stop inside a chat's topic.", None).await?;
+                return Ok(());
+            };
+            let runs: Vec<i64> = {
+                let c = st.db.conn();
+                let mut q = c.prepare("SELECT id FROM runs WHERE chat_id=?1 AND status='running'")?;
+                let v = q.query_map([chat.id], |r| r.get(0))?.filter_map(Result::ok).collect();
+                v
+            };
+            if runs.is_empty() {
+                reply(st, msg, "Nothing is running in this chat.", None).await?;
+            }
+            for r in runs {
+                crate::runner::cancel_run(st, r).await?;
+            }
         }
         _ => {
             // A reply to a question message = typed answer.
@@ -537,11 +580,311 @@ async fn on_update(st: &St, u: &Value) -> Result<()> {
                     if !text.is_empty() {
                         set_answer(st, req_id, qi, vec![text.clone()], true, &display_name(&msg["from"])).await?;
                     }
+                    return Ok(());
                 }
             }
+            // Other bots' commands, or service messages (topic created, member joined…).
+            if cmd.starts_with('/') || msg["from"]["is_bot"] == true {
+                return Ok(());
+            }
+            prompt_from_message(st, msg).await?;
         }
     }
     Ok(())
+}
+
+/// The chat whose forum topic this is.
+fn chat_for_topic(st: &St, topic: i64) -> Option<Chat> {
+    let id: i64 = st
+        .db
+        .conn()
+        .query_row("SELECT id FROM chats WHERE tg_topic_id=?1 ORDER BY id DESC LIMIT 1", [topic], |r| r.get(0))
+        .ok()?;
+    get_chat(&st.db, id).ok()
+}
+
+/// A plain message in a chat's topic becomes that chat's next prompt.
+async fn prompt_from_message(st: &St, msg: &Value) -> Result<()> {
+    let text = msg["text"].as_str().or(msg["caption"].as_str()).unwrap_or("").trim().to_string();
+    let has_file = msg.get("photo").is_some() || msg.get("document").is_some();
+    if text.is_empty() && !has_file {
+        return Ok(());
+    }
+    let Some(chat) = topic_of(msg).and_then(|t| chat_for_topic(st, t)) else {
+        reply(st, msg, "This topic isn't linked to a chat. Send /new to start one.", None).await?;
+        return Ok(());
+    };
+    let mut atts = Vec::new();
+    if has_file {
+        match download_attachment(st, msg).await {
+            Ok(a) => atts.push(a),
+            Err(e) => {
+                reply(st, msg, &format!("Couldn't download the file: {}", html_escape(&format!("{e:#}"))), None).await?;
+                return Ok(());
+            }
+        }
+    }
+    let busy = chat.status == "running" || chat.status == "queued" || chat.status == "waiting";
+    let author = display_name(&msg["from"]);
+    crate::runner::enqueue(
+        st,
+        crate::runner::NewRun {
+            chat_id: chat.id,
+            user_id: None,
+            source: "telegram",
+            schedule_id: None,
+            prompt: &text,
+            attachments: Value::Array(atts),
+            chain: vec![],
+            author: Some(author),
+        },
+    )?;
+    let _ = st.db.conn().execute("UPDATE chats SET updated_at=?2 WHERE id=?1", rusqlite::params![chat.id, crate::util::now()]);
+    let _ = call(
+        st,
+        "setMessageReaction",
+        json!({"chat_id": msg["chat"]["id"], "message_id": msg["message_id"], "reaction": [{"type": "emoji", "emoji": "👀"}]}),
+    )
+    .await;
+    if busy {
+        reply(st, msg, "⏳ Queued — it runs after the current prompt.", None).await?;
+    }
+    Ok(())
+}
+
+/// Save a photo (largest size) or document from a message as an upload.
+async fn download_attachment(st: &St, msg: &Value) -> Result<Value> {
+    let (file_id, filename, mime) = if let Some(sizes) = msg["photo"].as_array() {
+        let best = sizes.last().ok_or_else(|| anyhow!("empty photo"))?;
+        (best["file_id"].as_str().unwrap_or("").to_string(), "photo.jpg".to_string(), "image/jpeg".to_string())
+    } else {
+        let d = &msg["document"];
+        let name = d["file_name"].as_str().unwrap_or("file").to_string();
+        let mime = d["mime_type"].as_str().map(String::from).unwrap_or_else(|| mime_guess::from_path(&name).first_or_octet_stream().to_string());
+        (d["file_id"].as_str().unwrap_or("").to_string(), name, mime)
+    };
+    let f = call(st, "getFile", json!({"file_id": file_id})).await?;
+    let path = f["file_path"].as_str().ok_or_else(|| anyhow!("file too big for the Bot API (20 MB max)"))?;
+    let token = token(st).ok_or_else(|| anyhow!("no token"))?;
+    let base = std::env::var("CLOUD_AI_TELEGRAM_API").unwrap_or_else(|_| "https://api.telegram.org".into());
+    let url = format!("{}/file/bot{token}/{path}", base.trim_end_matches('/'));
+    let data = st.http.get(&url).timeout(Duration::from_secs(120)).send().await?.error_for_status()?.bytes().await?;
+    let dir = st.cfg.uploads_dir().join(chrono::Utc::now().format("%Y-%m").to_string());
+    std::fs::create_dir_all(&dir)?;
+    let safe: String = filename.chars().map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' }).collect();
+    let dest = dir.join(format!("{}-{}", uuid::Uuid::new_v4().simple(), safe));
+    std::fs::write(&dest, &data)?;
+    let dest = dest.to_string_lossy().to_string();
+    let id = {
+        let c = st.db.conn();
+        c.execute(
+            "INSERT INTO attachments(user_id,filename,path,mime,size,created_at) VALUES(NULL,?1,?2,?3,?4,?5)",
+            rusqlite::params![filename, dest, mime, data.len() as i64, crate::util::now()],
+        )?;
+        c.last_insert_rowid()
+    };
+    Ok(json!({"id": id, "filename": filename, "path": dest, "mime": mime, "size": data.len() as i64}))
+}
+
+/// `/new`: pick a project, then a tool; the prompt typed after the command is sent once the chat exists.
+async fn new_chat_picker(st: &St, msg: &Value, prompt: String) -> Result<()> {
+    let projects: Vec<(i64, String)> = {
+        let c = st.db.conn();
+        let mut q = c.prepare("SELECT id, name FROM projects ORDER BY name")?;
+        let v = q.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(Result::ok).collect();
+        v
+    };
+    if projects.is_empty() {
+        reply(st, msg, "There are no projects yet. Add one in the panel first.", None).await?;
+        return Ok(());
+    }
+    let (text, kb) = if projects.len() == 1 {
+        tool_picker(projects[0].0, &projects[0].1)
+    } else {
+        let mut rows: Vec<Value> = projects.iter().map(|(id, name)| json!([{"text": truncate(name, 60), "callback_data": format!("np:{id}")}])).collect();
+        rows.push(json!([{"text": "Cancel", "callback_data": "dx"}]));
+        ("🆕 New chat — which project?".to_string(), Value::Array(rows))
+    };
+    let id = reply(st, msg, &text, Some(kb)).await?;
+    st.telegram.pending_new.lock().unwrap().insert(id, prompt);
+    Ok(())
+}
+
+fn tool_picker(pid: i64, name: &str) -> (String, Value) {
+    (
+        format!("🆕 New chat in <b>{}</b> — which agent?", html_escape(name)),
+        json!([
+            [{"text": "Claude Code", "callback_data": format!("nt:{pid}:claude")}, {"text": "Codex", "callback_data": format!("nt:{pid}:codex")}],
+            [{"text": "Cancel", "callback_data": "dx"}]
+        ]),
+    )
+}
+
+async fn create_chat_from_picker(st: &St, message_id: i64, pid: i64, tool: &str, by: &str) -> Result<String> {
+    let prompt = st.telegram.pending_new.lock().unwrap().remove(&message_id).unwrap_or_default();
+    let title = if prompt.is_empty() { "Telegram chat".to_string() } else { crate::chats::title_from(&prompt) };
+    let chat = crate::chats::create_chat(
+        st,
+        crate::chats::NewChat {
+            project_id: pid,
+            user_id: None,
+            title,
+            tool: tool.to_string(),
+            model: String::new(),
+            effort: String::new(),
+            permission_mode: settings::get(&st.db, "default_permission_mode"),
+            worktree: false,
+            auto_deploy: false,
+            schedule_id: None,
+        },
+    )?;
+    if !prompt.is_empty() {
+        crate::runner::enqueue(
+            st,
+            crate::runner::NewRun {
+                chat_id: chat.id,
+                user_id: None,
+                source: "telegram",
+                schedule_id: None,
+                prompt: &prompt,
+                attachments: json!([]),
+                chain: vec![],
+                author: Some(by.to_string()),
+            },
+        )?;
+    }
+    let next = if prompt.is_empty() { "Write your first message in its topic." } else { "The prompt was sent; follow it in its topic." };
+    edit(st, message_id, &format!("🆕 Chat <b>{}</b> created. {next}", html_escape(&chat.title)), None).await;
+    Ok("Chat created".into())
+}
+
+/// Keep Telegram's "typing…" indicator on while a Telegram prompt runs.
+fn spawn_typing(st: St, run_id: i64, thread: Option<i64>) {
+    tokio::spawn(async move {
+        let Some(gid) = group(&st) else { return };
+        for _ in 0..400 {
+            let running = store::get_run(&st.db, run_id).map(|r| r.status == "running").unwrap_or(false);
+            if !running {
+                return;
+            }
+            let mut body = json!({"chat_id": gid, "action": "typing"});
+            if let Some(t) = thread {
+                body["message_thread_id"] = json!(t);
+            }
+            let _ = call(&st, "sendChatAction", body).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
+}
+
+/// Split an answer into Telegram-sized HTML messages (Markdown code, bold and
+/// fences converted). Long answers are capped; the panel has the full text.
+fn answer_chunks(text: &str) -> Vec<String> {
+    const RAW_MAX: usize = 3000; // leaves room for escaping and the footer
+    const MAX_CHUNKS: usize = 8;
+    let mut raw: Vec<String> = vec![String::new()];
+    for line in text.lines() {
+        let mut line = line.to_string();
+        // Hard-wrap single lines that are longer than a chunk.
+        while line.len() > RAW_MAX {
+            let mut cut = RAW_MAX;
+            while !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let rest = line.split_off(cut);
+            raw.push(line);
+            raw.push(String::new());
+            line = rest;
+        }
+        let cur = raw.last_mut().unwrap();
+        if !cur.is_empty() && cur.len() + line.len() + 1 > RAW_MAX {
+            raw.push(line);
+        } else {
+            if !cur.is_empty() {
+                cur.push('\n');
+            }
+            cur.push_str(&line);
+        }
+    }
+    raw.retain(|c| !c.trim().is_empty());
+    let truncated = raw.len() > MAX_CHUNKS;
+    raw.truncate(MAX_CHUNKS);
+    let mut in_fence = false;
+    let mut out: Vec<String> = raw.iter().map(|c| md_to_html(c, &mut in_fence)).collect();
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    if truncated {
+        out.last_mut().unwrap().push_str("\n\n<i>… answer shortened; the full text is in the panel.</i>");
+    }
+    out
+}
+
+/// Minimal Markdown → Telegram HTML. `in_fence` carries an open ``` block across chunks.
+fn md_to_html(chunk: &str, in_fence: &mut bool) -> String {
+    let mut out = String::new();
+    if *in_fence {
+        out.push_str("<pre>");
+    }
+    for (i, line) in chunk.lines().enumerate() {
+        if line.trim_start().starts_with("```") {
+            if *in_fence {
+                out.push_str("</pre>");
+            } else {
+                if i > 0 {
+                    out.push('\n');
+                }
+                out.push_str("<pre>");
+            }
+            *in_fence = !*in_fence;
+            continue;
+        }
+        if i > 0 && !out.ends_with("<pre>") {
+            out.push('\n');
+        }
+        if *in_fence {
+            out.push_str(&html_escape(line));
+        } else {
+            out.push_str(&inline_md(line));
+        }
+    }
+    if *in_fence {
+        out.push_str("</pre>");
+    }
+    out
+}
+
+fn inline_md(line: &str) -> String {
+    // Headings → bold.
+    let t = line.trim_start();
+    if t.starts_with('#') {
+        let h = t.trim_start_matches('#').trim();
+        if !h.is_empty() && t.chars().nth(t.len() - t.trim_start_matches('#').len()) == Some(' ') {
+            return format!("<b>{}</b>", html_escape(h));
+        }
+    }
+    let mut out = String::new();
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('`') {
+            if let Some(end) = after.find('`') {
+                out.push_str(&format!("<code>{}</code>", html_escape(&after[..end])));
+                rest = &after[end + 1..];
+                continue;
+            }
+        }
+        if let Some(after) = rest.strip_prefix("**") {
+            if let Some(end) = after.find("**").filter(|e| *e > 0) {
+                out.push_str(&format!("<b>{}</b>", html_escape(&after[..end])));
+                rest = &after[end + 2..];
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push_str(&html_escape(&ch.to_string()));
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
 }
 
 async fn on_callback(st: &St, cb: &Value) -> Result<String> {
@@ -629,7 +972,16 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
             edit(st, message_id, &format!("↩️ Rollback started by {}", html_escape(&by)), None).await;
             Ok("Rollback started".into())
         }
+        ["np", pid] => {
+            let pid: i64 = pid.parse()?;
+            let p = get_project(&st.db, pid)?;
+            let (text, kb) = tool_picker(pid, &p.name);
+            edit(st, message_id, &text, Some(kb)).await;
+            Ok(p.name)
+        }
+        ["nt", pid, tool] => create_chat_from_picker(st, message_id, pid.parse()?, tool, &by).await,
         ["dx"] => {
+            st.telegram.pending_new.lock().unwrap().remove(&message_id);
             edit(st, message_id, "Cancelled", None).await;
             Ok("Cancelled".into())
         }
@@ -682,5 +1034,32 @@ mod tests {
         // General topic, or a plain reply thread in a non-forum group.
         assert_eq!(topic_of(&json!({"message_id": 1})), None);
         assert_eq!(topic_of(&json!({"message_thread_id": 7})), None);
+    }
+
+    #[test]
+    fn markdown_to_telegram_html() {
+        let mut f = false;
+        assert_eq!(md_to_html("Use `a<b>` and **bold**", &mut f), "Use <code>a&lt;b&gt;</code> and <b>bold</b>");
+        assert_eq!(md_to_html("## Title\ntext", &mut f), "<b>Title</b>\ntext");
+        assert_eq!(md_to_html("x\n```rust\nlet a = 1 < 2;\n```\ny", &mut f), "x\n<pre>let a = 1 &lt; 2;</pre>\ny");
+        assert!(!f);
+        // A fence left open at a chunk boundary is closed and reopened.
+        assert_eq!(md_to_html("```\nfn a()", &mut f), "<pre>fn a()</pre>");
+        assert!(f);
+        assert_eq!(md_to_html("}\n```\ndone", &mut f), "<pre>}</pre>\ndone");
+        assert!(!f);
+        assert_eq!(md_to_html("a ** b `c", &mut f), "a ** b `c");
+    }
+
+    #[test]
+    fn answers_are_split_and_capped() {
+        let long = "line\n".repeat(5000);
+        let chunks = answer_chunks(&long);
+        assert_eq!(chunks.len(), 8);
+        assert!(chunks.iter().all(|c| c.len() < 4000));
+        assert!(chunks.last().unwrap().contains("shortened"));
+        assert_eq!(answer_chunks("hi"), vec!["hi".to_string()]);
+        let one_line = "x".repeat(7000);
+        assert_eq!(answer_chunks(&one_line).len(), 3);
     }
 }

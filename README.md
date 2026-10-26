@@ -6,17 +6,21 @@ It is one small Rust binary (about 15–30 MB of RAM) with an embedded React PWA
 ## Features
 
 - **Chats with Claude Code or Codex** on any project folder. You can pick the model and reasoning effort; the list is read from the installed CLIs and refreshed automatically. Replies, thinking, tool calls and diffs stream live. You can attach images and files, stop a run, or queue follow-ups. Each chat can optionally run in its own git worktree with a one-click merge.
+- **Sub-agents**: when Claude Code or Codex hands work to sub-agents, a side panel (a drawer on phones) lists each one with its live status, duration, tool count and the step it is on. Open one to see the task it was given and its own tool calls, or stop just that agent. When the CLI can't stop a single agent, the running prompt is stopped instead, and the panel tells you which happened.
 - **Permission modes** per chat: full access (the default), auto-edit, ask before changes, plan only. Approvals and the agents' questions show up as cards in the panel *and* as Telegram messages with buttons. Answering in one place updates the other.
 - **Schedules**: run prompts once, daily, on chosen weekdays, or on a cron expression (with a builder and a preview of the next runs). Times are in Asia/Tehran by default. A schedule can be a chain of prompts, can start a new chat each time or keep using one, and can deploy when it finishes. If a project is busy, scheduled prompts wait in the queue.
 - **Queue and resource guard**: a limit of parallel sessions per tool (default 3 + 3), a minimum free RAM before a prompt starts, and idle agent processes stopped automatically. Conversations resume transparently.
 - **Projects**: add an existing folder, create a new one, clone a git repo, or import from another server over SSH. Admins assign projects to users. Includes a file browser/editor and a git view (status, diff, commit, push, pull, branches, history).
 - **Deploys**: run a command on this server, or ship to another server over SSH, either with `git push` + `git pull` there or with rsync. The commit is recorded for every deploy, and an optional health check rolls back automatically on failure. Deploy and rollback buttons are in the panel and in Telegram. Each project has a **Deploy history** tab listing every deploy and rollback with its log, where you can roll back to any earlier successful version. Running deploys show on the dashboard and on the project's chat pages. Claude and Codex can also SSH into your servers to read logs.
 - **Live preview**: the panel starts and stops each project's dev server. A headless Chromium on the server opens the dev or production site, streamed into the panel (desktop, tablet and phone sizes). You can click and type in it, read the console, open it fullscreen, and **select elements**: selector, HTML, styles and a screenshot are captured, and you can comment on each and send them all to Claude or Codex in one go.
-- **Telegram**: one group with a topic per chat. It reports new chats, prompts, results, errors, approvals, questions, deploys and updates. You answer approvals and questions with buttons (or by replying with text), and `/deploy` and `/status` work from the group. A deploy started from a topic asks for confirmation and reports its progress in that same topic.
+- **Telegram**: one group with a topic per chat. It reports new chats, prompts, results, errors, approvals, questions, deploys and updates. You answer approvals and questions with buttons (or by replying with text).
+  - **Chat from Telegram**: write in a chat's topic and the message becomes that chat's next prompt (photos and files too). The answer comes back in the topic.
+  - `/new [prompt]` starts a new chat: pick the project and the agent with buttons.
+  - `/stop` stops the running prompt in a topic, and `/deploy` and `/status` work from the group. A deploy started from a topic asks for confirmation and reports its progress in that same topic.
 - **Users and security**: admin and user roles, **mandatory TOTP 2FA** for everyone, login rate limiting, and encrypted secrets. The first admin needs a one-time setup token.
-- **Maintenance**: Claude Code and Codex are updated every day at 05:00, but only when nothing is running. A failed update is rolled back. The panel updates itself from GitHub releases. You can log the CLIs in from the panel (Codex device code, or a web terminal for `claude auth login`), and there is a web terminal for anything else.
+- **Maintenance**: Claude Code and Codex are updated every day at 05:00, but only when nothing is running. A failed update is rolled back. The panel updates itself from GitHub releases. You can log the CLIs in from the panel (Codex device code, or a web terminal for `claude auth login`), and there is a web terminal for anything else. In the terminal, **Ctrl+Shift+V** pastes and **Ctrl+Shift+C** copies, links are clickable, and on phones there are Paste and Copy buttons.
 - **Skills, plugins, MCP servers and CLAUDE.md / AGENTS.md** for both CLIs, either global or per project.
-- Dark and light theme, installable as a PWA, works on mobile.
+- Dark and light theme, installable as a PWA, works on mobile. Pages show a loading placeholder until their data arrives, and an error with Retry if it can't load (they also retry on their own when the connection comes back), never an empty list by mistake.
 
 ## Install
 
@@ -37,7 +41,7 @@ The installer does the following:
 
 Open the domain, create the admin with the setup token, scan the QR code with an authenticator app, and you are in.
 
-Installer options: `--version v0.2.0`, `--port 8787`, `--no-browser`, and `--build`, which builds from a checkout instead of downloading.
+Installer options: `--version v0.3.0`, `--port 8787`, `--no-browser`, and `--build`, which builds from a checkout instead of downloading.
 
 ### After installing
 
@@ -45,7 +49,7 @@ Installer options: `--version v0.2.0`, `--port 8787`, `--no-browser`, and `--bui
 2. **Admin → Settings → Telegram**:
    - create a bot with @BotFather;
    - create a group with *Topics* enabled;
-   - add the bot as an admin with "Manage topics";
+   - add the bot as an admin with "Manage topics" (as an admin it also receives the plain messages you write in topics, which is how you chat from Telegram; otherwise turn its privacy mode off in @BotFather);
    - send `/id` in the group, then paste the token and chat id.
 3. **Projects → Add project**.
 4. **Admin → Servers**, for deploying to other machines: add the panel's public key to `authorized_keys` on the target server, or use your own key or a password.
@@ -95,7 +99,7 @@ Every deploy command runs with `bash -l` in the project folder, or in the remote
 Push a tag, or run **Actions → Release → Run workflow** with a version:
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
 The workflow builds `cloud-ai-linux-x86_64` and `cloud-ai-linux-aarch64`, each with a `.sha256` file, and publishes a GitHub release.

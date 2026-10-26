@@ -1,10 +1,11 @@
+import { Loadable, SkeletonGrid } from "../components/Loadable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderGit2, Plus, Rocket } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { FolderPicker } from "../components/FolderPicker";
 import { ProjectFields, type ProjectDraft } from "../components/ProjectForm";
-import { Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Select, Spinner, Tabs, useAction } from "../components/ui";
+import { Badge, Button, Card, Empty, Field, Input, Modal, PageHeader, Select, Tabs, useAction } from "../components/ui";
 import { api } from "../lib/api";
 import { useIsAdmin } from "../lib/auth";
 import type { Project, Server } from "../lib/types";
@@ -122,8 +123,10 @@ export default function Projects() {
           )
         }
       />
-      {q.isLoading && <Spinner />}
-      {q.data?.length === 0 && (
+      <Loadable q={q} skeleton={<SkeletonGrid />}>
+        {(list) => (
+          <>
+      {list.length === 0 && (
         <Card>
           <Empty icon={<FolderGit2 className="size-8" />} title="No projects yet">
             {admin ? "Add a folder on this server, clone a repository or import one from another server." : "Ask an admin to give you access to a project."}
@@ -131,7 +134,7 @@ export default function Projects() {
         </Card>
       )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {q.data?.map((p) => (
+        {list.map((p) => (
           <Link key={p.id} to={`/projects/${p.id}`}>
             <Card className="p-4 h-full hover:border-accent/60 transition">
               <div className="flex items-start justify-between gap-2">
@@ -153,6 +156,9 @@ export default function Projects() {
           </Link>
         ))}
       </div>
+          </>
+        )}
+      </Loadable>
       <AddProject open={adding} onClose={() => setAdding(false)} />
     </>
   );

@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryGate } from "../../components/Loadable";
 import { Download, RefreshCw, Save, Send } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Badge, Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea, Toggle, useAction, useConfirm, useToast } from "../../components/ui";
+import { Badge, Button, Card, Field, Input, PageHeader, Select, Textarea, Toggle, useAction, useConfirm, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
 import { MODES } from "../../lib/format";
 
@@ -99,7 +100,8 @@ export default function Settings() {
   useEffect(() => {
     if (q.data) setV(q.data);
   }, [q.data]);
-  if (!q.data) return <Spinner page />;
+  const gate = queryGate(q);
+  if (gate) return gate;
   const up = (k: string, val: string) => setV({ ...v, [k]: val });
   const bool = (k: string) => v[k] === "1" || v[k] === "true";
   const save = async () => {

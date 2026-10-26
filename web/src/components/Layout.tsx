@@ -16,13 +16,14 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { useLiveStatus } from "../lib/live";
+import { useLiveStatus, useOnline } from "../lib/live";
 import type { Project } from "../lib/types";
-import { cx, StatusDot } from "./ui";
+import { PageErrorBoundary } from "./Loadable";
+import { cx, Spinner, StatusDot } from "./ui";
 
 const main = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -117,6 +118,14 @@ export default function Layout() {
   const [open, setOpen] = useState(false);
   const loc = useLocation();
   const up = useLiveStatus();
+  const online = useOnline();
+  // Only show "reconnecting" when it lasts, so a quick reconnect doesn't flash a banner.
+  const [showDown, setShowDown] = useState(false);
+  useEffect(() => {
+    if (up) return setShowDown(false);
+    const t = setTimeout(() => setShowDown(true), 2500);
+    return () => clearTimeout(t);
+  }, [up]);
   const isChat = loc.pathname.startsWith("/chats/") || loc.pathname === "/terminal";
   useEffect(() => setOpen(false), [loc.pathname]);
   return (
@@ -142,19 +151,26 @@ export default function Layout() {
           <img src="/favicon.svg" className="size-6" alt="" />
           <span className="font-semibold">cloud-ai</span>
         </header>
-        {!up && (
-          <div className="flex items-center gap-2 justify-center bg-warn-soft text-warn text-xs py-1">
-            <WifiOff className="size-3.5" /> Reconnecting to live updates…
+        {(!online || showDown) && (
+          <div role="status" className="flex items-center gap-2 justify-center bg-warn-soft text-warn text-xs py-1 px-3 text-center">
+            <WifiOff className="size-3.5 shrink-0" />
+            {!online ? "You're offline. Pages show the last loaded data and refresh when you're back online." : "Reconnecting to the server…"}
           </div>
         )}
         <main className={cx("flex-1 min-h-0", isChat ? "flex flex-col" : "overflow-y-auto scroll-thin")}>
-          {isChat ? (
-            <Outlet />
-          ) : (
-            <div className="mx-auto max-w-6xl px-4 py-5 lg:px-8 lg:py-7 pb-24 lg:pb-8">
-              <Outlet />
-            </div>
-          )}
+          <PageErrorBoundary resetKey={loc.pathname}>
+            {isChat ? (
+              <Suspense fallback={<Spinner page />}>
+                <Outlet />
+              </Suspense>
+            ) : (
+              <div className="mx-auto max-w-6xl px-4 py-5 lg:px-8 lg:py-7 pb-24 lg:pb-8">
+                <Suspense fallback={<Spinner page />}>
+                  <Outlet />
+                </Suspense>
+              </div>
+            )}
+          </PageErrorBoundary>
         </main>
         {!isChat && (
           <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-border bg-panel safe-bottom">

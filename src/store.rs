@@ -213,10 +213,12 @@ pub struct Run {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// Display name of a sender outside the panel (e.g. "@bob (Telegram)").
+    pub author: Option<String>,
 }
 
 impl Run {
-    pub const COLS: &'static str = "id,chat_id,user_id,source,schedule_id,prompt,attachments,chain,status,error,result_text,cost_usd,input_tokens,output_tokens,created_at,started_at,finished_at";
+    pub const COLS: &'static str = "id,chat_id,user_id,source,schedule_id,prompt,attachments,chain,status,error,result_text,cost_usd,input_tokens,output_tokens,created_at,started_at,finished_at,author";
     pub fn from_row(r: &Row) -> rusqlite::Result<Run> {
         let att: String = r.get(6)?;
         let chain: String = r.get(7)?;
@@ -238,6 +240,7 @@ impl Run {
             created_at: r.get(14)?,
             started_at: r.get(15)?,
             finished_at: r.get(16)?,
+            author: r.get(17)?,
         })
     }
 }

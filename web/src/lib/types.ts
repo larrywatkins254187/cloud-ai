@@ -99,7 +99,7 @@ export interface Msg {
   id: number;
   chat_id: number;
   run_id: number | null;
-  kind: "user" | "assistant" | "thinking" | "tool_use" | "tool_result" | "error" | "system" | "plan" | "todo";
+  kind: "user" | "assistant" | "thinking" | "tool_use" | "tool_result" | "error" | "system" | "plan" | "todo" | "agent";
   data: any;
   created_at: string;
 }
@@ -199,7 +199,7 @@ export type ServerEvent =
   | { type: "chat_updated"; chat: Chat }
   | { type: "chat_deleted"; chat_id: number; project_id: number }
   | { type: "message"; message: Msg }
-  | { type: "delta"; chat_id: number; run_id: number; kind: "text" | "thinking" | "activity"; text: string }
+  | { type: "delta"; chat_id: number; run_id: number; kind: "text" | "thinking" | "activity" | "agent"; text: string }
   | { type: "run_queued"; run: Run }
   | { type: "run_started"; run: Run }
   | { type: "run_finished"; run: Run }

@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { QueryStatus } from "../../components/Loadable";
 import { History, Rocket } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import { deployLabel, deployTone, useProjectDeploys, useTicker } from "../../components/DeployStatus";
-import { Badge, Button, Card, Empty, Spinner, useAction, useConfirm } from "../../components/ui";
+import { Badge, Button, Card, Empty, useAction, useConfirm } from "../../components/ui";
 import { api } from "../../lib/api";
 import { useIsAdmin } from "../../lib/auth";
 import { dateTime, duration } from "../../lib/format";
@@ -15,7 +16,7 @@ export function DeployLog({ id }: { id: number }) {
   useEffect(() => {
     ref.current?.scrollTo(0, ref.current.scrollHeight);
   }, [q.data?.log]);
-  if (q.isLoading) return <Spinner />;
+  if (q.data === undefined) return <QueryStatus q={q} compact title="Deploy log" />;
   return (
     <pre ref={ref} className="bg-code border border-border rounded-lg p-3 text-[12px] leading-5 font-mono max-h-[50dvh] overflow-auto scroll-thin whitespace-pre-wrap">
       {q.data?.log || "…"}
@@ -85,8 +86,10 @@ export default function DeployTab({ project }: { project: Project }) {
             <History className="size-3.5" /> All deploys & rollback
           </Link>
         </div>
-        {list.isLoading ? (
-          <Spinner />
+        {list.data === undefined ? (
+          <div className="p-4">
+            <QueryStatus q={list} compact />
+          </div>
         ) : latest ? (
           <div className="p-4 space-y-2">
             {latest.health && <div className="text-xs text-ok">Health: {latest.health}</div>}

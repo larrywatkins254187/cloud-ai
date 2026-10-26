@@ -173,6 +173,7 @@ pub fn fire(st: &St, id: i64) -> Result<i64> {
             prompt: first,
             attachments: json!([]),
             chain: rest.to_vec(),
+            author: None,
         },
     )?;
     st.db.conn().execute("UPDATE schedules SET last_run_at=?2 WHERE id=?1", params![s.id, now()])?;

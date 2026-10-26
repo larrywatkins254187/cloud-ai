@@ -52,7 +52,7 @@ export function ProjectFields({ v, set, showUsers = true }: { v: ProjectDraft; s
         </Field>
         {v.deploy_target === "remote" && (
           <div className="grid sm:grid-cols-2 gap-4">
-            <Field label="Server" hint={servers.data?.length ? undefined : "Add a server under Admin → Servers first"}>
+            <Field label="Server" hint={servers.data === undefined ? (servers.isError ? "Couldn't load the server list — check your connection" : undefined) : servers.data.length ? undefined : "Add a server under Admin → Servers first"}>
               <Select value={v.server_id ?? ""} onChange={(e) => up({ server_id: e.target.value ? Number(e.target.value) : null })}>
                 <option value="">Choose…</option>
                 {servers.data?.map((s) => (

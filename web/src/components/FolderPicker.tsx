@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
+import { QueryStatus } from "./Loadable";
 import { ArrowUp, Folder, FolderGit2 } from "lucide-react";
 import { useState } from "react";
 import { api, qs } from "../lib/api";
-import { Button, Input, Modal, Spinner } from "./ui";
+import { Button, Input, Modal } from "./ui";
 
 /** Browse the server's folders and pick one. */
 export function FolderPicker({ value, onChange }: { value: string; onChange: (p: string) => void }) {
@@ -55,8 +56,7 @@ export function FolderPicker({ value, onChange }: { value: string; onChange: (p:
           </Button>
           <code className="text-xs truncate">{q.data?.path ?? path}</code>
         </div>
-        {q.isLoading && <Spinner />}
-        {q.error && <div className="text-sm text-danger">{(q.error as Error).message}</div>}
+        <QueryStatus q={q} />
         <div className="rounded-lg border border-border divide-y divide-border max-h-80 overflow-y-auto scroll-thin">
           {q.data?.dirs?.map((d: any) => (
             <button key={d.path} onClick={() => setPath(d.path)} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-panel-2 text-left">

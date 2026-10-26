@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryStatus } from "../components/Loadable";
 import { Plus, SquareTerminal, X } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
@@ -73,8 +74,8 @@ export default function Terminal() {
         </Button>
       </div>
       <div className="flex-1 min-h-0">
-        {list.isLoading ? (
-          <Spinner />
+        {!active && list.data === undefined ? (
+          <QueryStatus q={list} />
         ) : active ? (
           <Suspense fallback={<Spinner />}>
             <TerminalView key={active} id={active} />

@@ -1,3 +1,4 @@
+import { Loadable, SkeletonList } from "../../components/Loadable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, MessageSquare } from "lucide-react";
 import { useState } from "react";
@@ -77,15 +78,19 @@ export default function ChatsTab({ project }: { project: Project }) {
             {archived ? "Show active" : "Archived"}
           </Button>
         </div>
-        {chats.data?.length ? (
-          <div className="divide-y divide-border">
-            {chats.data.map((c) => (
-              <ChatRow key={c.id} c={c} />
-            ))}
-          </div>
-        ) : (
-          <Empty icon={<MessageSquare className="size-8" />} title={archived ? "No archived chats" : "No chats yet"} />
-        )}
+        <Loadable q={chats} skeleton={<SkeletonList rows={4} className="border-0 rounded-none" />}>
+          {(list) =>
+            list.length ? (
+              <div className="divide-y divide-border">
+                {list.map((c) => (
+                  <ChatRow key={c.id} c={c} />
+                ))}
+              </div>
+            ) : (
+              <Empty icon={<MessageSquare className="size-8" />} title={archived ? "No archived chats" : "No chats yet"} />
+            )
+          }
+        </Loadable>
       </Card>
     </div>
   );

@@ -1,6 +1,6 @@
 use crate::agents::Attachment;
 use crate::auth::AuthUser;
-use crate::chats::{create_chat, delete_chat, merge_worktree, remove_worktree, validate_mode, NewChat};
+use crate::chats::{create_chat, delete_chat, merge_worktree, remove_worktree, title_from, validate_mode, NewChat};
 use crate::runner::{self, enqueue, NewRun};
 use crate::settings;
 use crate::state::St;
@@ -29,6 +29,22 @@ fn chat_json(st: &St, c: &Chat) -> Value {
     v
 }
 
+/// Chats as JSON, looking each owner's name up once instead of once per chat.
+fn chats_json(st: &St, chats: &[Chat]) -> Value {
+    let mut names: std::collections::HashMap<Option<i64>, String> = std::collections::HashMap::new();
+    Value::Array(
+        chats
+            .iter()
+            .map(|c| {
+                let mut v = serde_json::to_value(c).unwrap();
+                let name = names.entry(c.user_id).or_insert_with(|| store::username(&st.db, c.user_id));
+                v["user"] = json!(name);
+                v
+            })
+            .collect(),
+    )
+}
+
 #[derive(Deserialize)]
 pub struct ListQ {
     archived: Option<bool>,
@@ -47,7 +63,7 @@ pub async fn list(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path<i
         let v = s.query_map(params![pid, q.archived.unwrap_or(false) as i64], Chat::from_row)?.collect::<Result<_, _>>()?;
         v
     };
-    Ok(Json(Value::Array(chats.iter().map(|c| chat_json(&st, c)).collect())))
+    Ok(Json(chats_json(&st, &chats)))
 }
 
 pub async fn list_all(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Json<Value>> {
@@ -65,7 +81,7 @@ pub async fn list_all(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<
         let v = s.query_map([], Chat::from_row)?.collect::<Result<_, _>>()?;
         v
     };
-    Ok(Json(Value::Array(chats.iter().map(|c| chat_json(&st, c)).collect())))
+    Ok(Json(chats_json(&st, &chats)))
 }
 
 #[derive(Deserialize)]
@@ -102,15 +118,6 @@ fn load_attachments(st: &St, u: &User, ids: &[i64]) -> ApiResult<Value> {
     Ok(Value::Array(out))
 }
 
-fn title_from(prompt: &str) -> String {
-    let first = prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("New chat").trim();
-    let mut t: String = first.chars().take(60).collect();
-    if first.chars().count() > 60 {
-        t.push('…');
-    }
-    t
-}
-
 pub async fn create(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path<i64>, Json(b): Json<CreateBody>) -> ApiResult<Json<Value>> {
     if !can_access_project(&st.db, &u, pid) {
         return Err(ApiError::forbidden());
@@ -137,7 +144,7 @@ pub async fn create(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path
         let atts = load_attachments(&st, &u, &b.attachments)?;
         enqueue(
             &st,
-            NewRun { chat_id: chat.id, user_id: Some(u.id), source: "web", schedule_id: None, prompt: &prompt, attachments: atts, chain: vec![] },
+            NewRun { chat_id: chat.id, user_id: Some(u.id), source: "web", schedule_id: None, prompt: &prompt, attachments: atts, chain: vec![], author: None },
         )?;
     }
     Ok(Json(chat_json(&st, &get_chat(&st.db, chat.id)?)))
@@ -251,7 +258,7 @@ pub async fn send(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i6
     let atts = load_attachments(&st, &u, &b.attachments)?;
     let run = enqueue(
         &st,
-        NewRun { chat_id: id, user_id: Some(u.id), source: "web", schedule_id: None, prompt: &b.prompt, attachments: atts, chain: vec![] },
+        NewRun { chat_id: id, user_id: Some(u.id), source: "web", schedule_id: None, prompt: &b.prompt, attachments: atts, chain: vec![], author: None },
     )?;
     st.db.conn().execute("UPDATE chats SET updated_at=?2 WHERE id=?1", params![id, now()])?;
     Ok(Json(run))
@@ -269,6 +276,17 @@ pub async fn stop(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i6
         runner::cancel_run(&st, r).await?;
     }
     Ok(Json(json!({"ok": true})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct StopAgentBody {
+    tool_use_id: String,
+}
+
+pub async fn stop_agent(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>, Json(b): Json<StopAgentBody>) -> ApiResult<Json<Value>> {
+    chat_for(&st, &u, id)?;
+    let stopped = runner::stop_agent(&st, id, &b.tool_use_id).await?;
+    Ok(Json(json!({"ok": true, "stopped": stopped})))
 }
 
 pub async fn cancel_run(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {

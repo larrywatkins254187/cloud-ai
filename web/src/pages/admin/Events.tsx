@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { QueryStatus } from "../../components/Loadable";
 import { Badge, Card, PageHeader } from "../../components/ui";
 import { api } from "../../lib/api";
 import { dateTime } from "../../lib/format";
@@ -9,6 +10,7 @@ export default function Events() {
     <>
       <PageHeader title="Activity log" subtitle="Updates, warnings and errors from the panel" />
       <Card className="divide-y divide-border">
+        <QueryStatus q={q} />
         {q.data?.length === 0 && <div className="p-6 text-sm text-muted text-center">Nothing yet</div>}
         {q.data?.map((e) => (
           <div key={e.id} className="px-4 py-2.5 flex gap-3 text-sm">

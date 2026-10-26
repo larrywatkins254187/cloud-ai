@@ -30,6 +30,27 @@ struct TurnCtx {
     failure: Option<String>,
 }
 
+/// A sub-agent thread (Codex collab `spawnAgent`) and where its output goes.
+#[derive(Clone)]
+struct ChildCtx {
+    chat_id: i64,
+    project_id: i64,
+    run_id: i64,
+    /// Item id of the spawnAgent call; the child's messages nest under it.
+    parent: String,
+    turn_id: Option<String>,
+}
+
+/// Codex collab agent status → the status shown in the panel.
+fn collab_status(s: &str) -> &'static str {
+    match s {
+        "completed" => "completed",
+        "errored" | "notFound" => "failed",
+        "interrupted" | "shutdown" => "stopped",
+        _ => "running",
+    }
+}
+
 pub struct CodexProc {
     stdin: mpsc::UnboundedSender<String>,
     child: Mutex<Option<Child>>,
@@ -38,6 +59,8 @@ pub struct CodexProc {
     loaded: Mutex<HashSet<String>>,
     /// Active turn per thread id.
     turns: Mutex<HashMap<String, TurnCtx>>,
+    /// Sub-agent threads spawned by a chat's turn, by thread id.
+    children: Mutex<HashMap<String, ChildCtx>>,
     alive: AtomicBool,
     last_active: Mutex<Instant>,
     stderr: Mutex<String>,
@@ -132,6 +155,27 @@ impl CodexManager {
     }
 }
 
+impl CodexManager {
+    /// Interrupt one sub-agent thread. Returns false when its turn isn't known.
+    pub async fn interrupt_agent(&self, chat_id: i64, spawn_id: &str) -> bool {
+        let p = self.proc_.lock().await.clone();
+        let Some(p) = p else { return false };
+        let targets: Vec<(String, String)> = p
+            .children
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, c)| c.chat_id == chat_id && c.parent == spawn_id)
+            .filter_map(|(t, c)| c.turn_id.clone().map(|turn| (t.clone(), turn)))
+            .collect();
+        let mut any = false;
+        for (thread, turn) in targets {
+            any |= p.request("turn/interrupt", json!({"threadId": thread, "turnId": turn})).await.is_ok();
+        }
+        any
+    }
+}
+
 pub async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
     let bin = settings::get(&st.db, "codex_path");
     let mut child = Command::new(&bin)
@@ -154,6 +198,7 @@ pub async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
         pending: Mutex::new(HashMap::new()),
         loaded: Mutex::new(HashSet::new()),
         turns: Mutex::new(HashMap::new()),
+        children: Mutex::new(HashMap::new()),
         alive: AtomicBool::new(true),
         last_active: Mutex::new(Instant::now()),
         stderr: Mutex::new(String::new()),
@@ -247,7 +292,11 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
     }
     let Some(thread) = params["threadId"].as_str() else { return };
     let mut turns = p.turns.lock().unwrap();
-    let Some(t) = turns.get_mut(thread) else { return };
+    let Some(t) = turns.get_mut(thread) else {
+        drop(turns);
+        child_notification(st, p, thread, method, params);
+        return;
+    };
     *p.last_active.lock().unwrap() = Instant::now();
     let (chat_id, project_id, run_id) = (t.chat_id, t.project_id, t.run_id);
     let delta = |kind: &str, text: &str| {
@@ -274,66 +323,8 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
             }
         }
         "item/completed" => {
-            let item = params["item"].clone();
-            let id = item["id"].clone();
-            match item["type"].as_str().unwrap_or("") {
-                "agentMessage" => {
-                    let text = item["text"].as_str().unwrap_or("").to_string();
-                    if !text.trim().is_empty() {
-                        t.last_text = text.clone();
-                        store_msg(st, chat_id, project_id, run_id, "assistant", json!({"text": text}));
-                    }
-                }
-                "reasoning" => {
-                    let parts: Vec<String> = item["summary"]
-                        .as_array()
-                        .or(item["content"].as_array())
-                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-                        .unwrap_or_default();
-                    let text = parts.join("\n\n");
-                    if !text.trim().is_empty() {
-                        store_msg(st, chat_id, project_id, run_id, "thinking", json!({"text": text}));
-                    }
-                }
-                "commandExecution" => {
-                    store_msg(st, chat_id, project_id, run_id, "tool_use", json!({
-                        "id": id, "name": "Bash", "input": {"command": item["command"], "cwd": item["cwd"]}
-                    }));
-                    let exit = item["exitCode"].as_i64();
-                    store_msg(st, chat_id, project_id, run_id, "tool_result", json!({
-                        "tool_use_id": id,
-                        "output": truncate(item["aggregatedOutput"].as_str().unwrap_or(""), 30_000),
-                        "is_error": exit.map(|c| c != 0).unwrap_or(false) || item["status"] == "failed" || item["status"] == "declined",
-                        "exit_code": exit,
-                    }));
-                }
-                "fileChange" => {
-                    store_msg(st, chat_id, project_id, run_id, "tool_use", json!({
-                        "id": id, "name": "Edit", "input": {"changes": item["changes"]}
-                    }));
-                    store_msg(st, chat_id, project_id, run_id, "tool_result", json!({
-                        "tool_use_id": id, "output": item["status"], "is_error": item["status"] == "failed" || item["status"] == "declined"
-                    }));
-                }
-                "mcpToolCall" => {
-                    store_msg(st, chat_id, project_id, run_id, "tool_use", json!({
-                        "id": id,
-                        "name": format!("mcp__{}__{}", item["server"].as_str().unwrap_or(""), item["tool"].as_str().unwrap_or("")),
-                        "input": item["arguments"],
-                    }));
-                    let out = if item["error"].is_null() { item["result"].to_string() } else { item["error"].to_string() };
-                    store_msg(st, chat_id, project_id, run_id, "tool_result", json!({
-                        "tool_use_id": id, "output": truncate(&out, 30_000), "is_error": !item["error"].is_null()
-                    }));
-                }
-                "webSearch" => {
-                    store_msg(st, chat_id, project_id, run_id, "tool_use", json!({"id": id, "name": "WebSearch", "input": item}));
-                }
-                "plan" => store_msg(st, chat_id, project_id, run_id, "plan", json!({"text": item["text"]})),
-                "contextCompaction" => {
-                    store_msg(st, chat_id, project_id, run_id, "system", json!({"text": "Conversation compacted to free context"}))
-                }
-                _ => {}
+            if let Some(text) = store_item(st, p, (chat_id, project_id, run_id), &params["item"], &Value::Null) {
+                t.last_text = text;
             }
         }
         "turn/plan/updated" => {
@@ -379,6 +370,145 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
             if let Some(done) = ctx.done.take() {
                 let _ = done.send(outcome);
             }
+        }
+        _ => {}
+    }
+}
+
+/// Store a finished item as chat messages (nested under `parent` for sub-agents).
+/// Returns the text of an agent message.
+fn store_item(st: &St, p: &CodexProc, ctx: (i64, i64, i64), item: &Value, parent: &Value) -> Option<String> {
+    let (chat_id, project_id, run_id) = ctx;
+    let id = item["id"].clone();
+    let store = |kind: &str, mut data: Value| {
+        if !parent.is_null() {
+            data["parent"] = parent.clone();
+        }
+        store_msg(st, chat_id, project_id, run_id, kind, data);
+    };
+    match item["type"].as_str().unwrap_or("") {
+        "agentMessage" => {
+            let text = item["text"].as_str().unwrap_or("").to_string();
+            if !text.trim().is_empty() {
+                store("assistant", json!({"text": text}));
+                return Some(text);
+            }
+        }
+        "reasoning" => {
+            let parts: Vec<String> = item["summary"]
+                .as_array()
+                .or(item["content"].as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let text = parts.join("\n\n");
+            if !text.trim().is_empty() {
+                store("thinking", json!({"text": text}));
+            }
+        }
+        "commandExecution" => {
+            store("tool_use", json!({"id": id, "name": "Bash", "input": {"command": item["command"], "cwd": item["cwd"]}}));
+            let exit = item["exitCode"].as_i64();
+            store("tool_result", json!({
+                "tool_use_id": id,
+                "output": truncate(item["aggregatedOutput"].as_str().unwrap_or(""), 30_000),
+                "is_error": exit.map(|c| c != 0).unwrap_or(false) || item["status"] == "failed" || item["status"] == "declined",
+                "exit_code": exit,
+            }));
+        }
+        "fileChange" => {
+            store("tool_use", json!({"id": id, "name": "Edit", "input": {"changes": item["changes"]}}));
+            store("tool_result", json!({
+                "tool_use_id": id, "output": item["status"], "is_error": item["status"] == "failed" || item["status"] == "declined"
+            }));
+        }
+        "mcpToolCall" => {
+            store("tool_use", json!({
+                "id": id,
+                "name": format!("mcp__{}__{}", item["server"].as_str().unwrap_or(""), item["tool"].as_str().unwrap_or("")),
+                "input": item["arguments"],
+            }));
+            let out = if item["error"].is_null() { item["result"].to_string() } else { item["error"].to_string() };
+            store("tool_result", json!({"tool_use_id": id, "output": truncate(&out, 30_000), "is_error": !item["error"].is_null()}));
+        }
+        "webSearch" => store("tool_use", json!({"id": id, "name": "WebSearch", "input": item})),
+        "plan" => store("plan", json!({"text": item["text"]})),
+        "contextCompaction" => store("system", json!({"text": "Conversation compacted to free context"})),
+        "collabAgentToolCall" => {
+            let tool = item["tool"].as_str().unwrap_or("");
+            let receivers: Vec<String> =
+                item["receiverThreadIds"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            let states = &item["agentsStates"];
+            let summary: Vec<String> = receivers
+                .iter()
+                .map(|r| {
+                    let s = &states[r];
+                    let msg = s["message"].as_str().unwrap_or("");
+                    format!("{}: {}{}", r, s["status"].as_str().unwrap_or("?"), if msg.is_empty() { String::new() } else { format!(" — {msg}") })
+                })
+                .collect();
+            let prompt = item["prompt"].as_str().unwrap_or("");
+            if tool == "spawnAgent" {
+                let description: String = prompt.lines().next().unwrap_or("Sub-agent").chars().take(80).collect();
+                store("tool_use", json!({
+                    "id": id, "name": "Agent",
+                    "input": {"description": description, "prompt": prompt, "model": item["model"], "subagent_type": "codex"}
+                }));
+                store("tool_result", json!({"tool_use_id": id, "output": summary.join("\n"), "is_error": item["status"] == "failed"}));
+                let parent_id = id.as_str().unwrap_or("").to_string();
+                for r in &receivers {
+                    p.children.lock().unwrap().insert(
+                        r.clone(),
+                        ChildCtx { chat_id, project_id, run_id, parent: parent_id.clone(), turn_id: None },
+                    );
+                    let status = states[r]["status"].as_str().map(collab_status).unwrap_or("running");
+                    store("agent", json!({"ref": parent_id, "task_id": r, "status": status, "background": true}));
+                }
+            } else {
+                store("tool_use", json!({"id": id, "name": format!("Agent·{tool}"), "input": {"agents": receivers, "prompt": prompt}}));
+                store("tool_result", json!({"tool_use_id": id, "output": summary.join("\n"), "is_error": item["status"] == "failed"}));
+                // Waits and closes report the agents' latest states.
+                for r in &receivers {
+                    let child = p.children.lock().unwrap().get(r).cloned();
+                    if let (Some(c), Some(s)) = (child, states[r]["status"].as_str()) {
+                        store_msg(st, c.chat_id, c.project_id, c.run_id, "agent", json!({
+                            "ref": c.parent, "task_id": r, "status": collab_status(s), "summary": states[r]["message"], "background": true
+                        }));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Events of a sub-agent thread: its items nest under the spawning call.
+fn child_notification(st: &St, p: &Arc<CodexProc>, thread: &str, method: &str, params: &Value) {
+    let Some(c) = p.children.lock().unwrap().get(thread).cloned() else { return };
+    *p.last_active.lock().unwrap() = Instant::now();
+    let parent = json!(c.parent);
+    match method {
+        "turn/started" => {
+            if let Some(ch) = p.children.lock().unwrap().get_mut(thread) {
+                ch.turn_id = params["turn"]["id"].as_str().map(String::from);
+            }
+            store_msg(st, c.chat_id, c.project_id, c.run_id, "agent", json!({"ref": c.parent, "task_id": thread, "status": "running", "background": true}));
+        }
+        "item/completed" => {
+            store_item(st, p, (c.chat_id, c.project_id, c.run_id), &params["item"], &parent);
+        }
+        "turn/completed" => {
+            let status = match params["turn"]["status"].as_str().unwrap_or("completed") {
+                "completed" => "completed",
+                "interrupted" => "stopped",
+                _ => "failed",
+            };
+            if let Some(ch) = p.children.lock().unwrap().get_mut(thread) {
+                ch.turn_id = None;
+            }
+            store_msg(st, c.chat_id, c.project_id, c.run_id, "agent", json!({
+                "ref": c.parent, "task_id": thread, "status": status, "summary": params["turn"]["error"]["message"], "background": true
+            }));
         }
         _ => {}
     }

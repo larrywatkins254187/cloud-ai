@@ -36,6 +36,7 @@ pub fn router() -> Router<St> {
         .route("/api/chats/{id}", get(chats::get_one).put(chats::update).delete(chats::remove))
         .route("/api/chats/{id}/messages", get(chats::messages).post(chats::send))
         .route("/api/chats/{id}/stop", post(chats::stop))
+        .route("/api/chats/{id}/agents/stop", post(chats::stop_agent))
         .route("/api/chats/{id}/merge", post(chats::merge))
         .route("/api/runs/{id}/cancel", post(chats::cancel_run))
         .route("/api/requests/{id}/answer", post(chats::answer))

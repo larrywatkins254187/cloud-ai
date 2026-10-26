@@ -187,3 +187,25 @@ body {
 .pulse-dot {
   animation: pulse-dot 1.2s ease-in-out infinite;
 }
+
+/* Loading placeholders */
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.skeleton {
+  background: var(--panel-2);
+  min-height: 0.5rem;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .pulse-dot {
+    animation: none;
+  }
+}

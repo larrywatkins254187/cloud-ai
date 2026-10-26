@@ -1,28 +1,39 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect } from "react";
+import { lazy, Suspense, useCallback, useEffect } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import Layout from "./components/Layout";
+import { ErrorState } from "./components/Loadable";
 import { Spinner, useToast } from "./components/ui";
 import { api, setUnauthorizedHandler } from "./lib/api";
 import { AuthCtx } from "./lib/auth";
 import { useLiveUpdates } from "./lib/live";
 import type { User } from "./lib/types";
-import Account from "./pages/Account";
-import Chat from "./pages/Chat";
 import Dashboard from "./pages/Dashboard";
-import Login from "./pages/Login";
-import Project from "./pages/Project";
-import Projects from "./pages/Projects";
-import Schedules from "./pages/Schedules";
-import Terminal from "./pages/Terminal";
-import Cli from "./pages/admin/Cli";
-import Events from "./pages/admin/Events";
-import Extensions from "./pages/admin/Extensions";
-import Servers from "./pages/admin/Servers";
-import Settings from "./pages/admin/Settings";
-import Users from "./pages/admin/Users";
+
+// Pages load on first visit; the dashboard ships with the main bundle.
+const Account = lazy(() => import("./pages/Account"));
+const Chat = lazy(() => import("./pages/Chat"));
+const Login = lazy(() => import("./pages/Login"));
+const Project = lazy(() => import("./pages/Project"));
+const Projects = lazy(() => import("./pages/Projects"));
+const Schedules = lazy(() => import("./pages/Schedules"));
+const Terminal = lazy(() => import("./pages/Terminal"));
+const Cli = lazy(() => import("./pages/admin/Cli"));
+const Events = lazy(() => import("./pages/admin/Events"));
+const Extensions = lazy(() => import("./pages/admin/Extensions"));
+const Servers = lazy(() => import("./pages/admin/Servers"));
+const Settings = lazy(() => import("./pages/admin/Settings"));
+const Users = lazy(() => import("./pages/admin/Users"));
 
 type Me = { user: User | null; version?: string; stage?: string; setup_needed?: boolean };
+
+function PageSpinner() {
+  return (
+    <div className="h-full flex items-center justify-center">
+      <Spinner inline className="size-6" />
+    </div>
+  );
+}
 
 export default function App() {
   const qc = useQueryClient();
@@ -33,16 +44,21 @@ export default function App() {
     setUnauthorizedHandler(() => qc.setQueryData(["me"], { user: null }));
   }, [qc]);
 
-  if (me.isLoading) {
+  if (me.data === undefined && !me.isError) return <PageSpinner />;
+  if (me.data === undefined) {
     return (
       <div className="h-full flex items-center justify-center">
-        <Spinner inline className="size-6" />
+        <ErrorState error={me.error} onRetry={me.refetch} retrying={me.isFetching} />
       </div>
     );
   }
   const data = me.data;
   if (!data?.user) {
-    return <Login setupNeeded={!!data?.setup_needed} pendingStage={data?.stage} onDone={refresh} />;
+    return (
+      <Suspense fallback={<PageSpinner />}>
+        <Login setupNeeded={!!data?.setup_needed} pendingStage={data?.stage} onDone={refresh} />
+      </Suspense>
+    );
   }
   const logout = async () => {
     await api.post("/api/auth/logout").catch(() => {});

@@ -63,14 +63,16 @@ pub struct NewRun<'a> {
     pub prompt: &'a str,
     pub attachments: Value,
     pub chain: Vec<String>,
+    /// Sender shown instead of the panel user (Telegram display name).
+    pub author: Option<String>,
 }
 
 pub fn enqueue(st: &St, r: NewRun) -> Result<Run> {
     let id = {
         let c = st.db.conn();
         c.execute(
-            "INSERT INTO runs(chat_id,user_id,source,schedule_id,prompt,attachments,chain,status,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',?8)",
-            params![r.chat_id, r.user_id, r.source, r.schedule_id, r.prompt, r.attachments.to_string(), json!(r.chain).to_string(), now()],
+            "INSERT INTO runs(chat_id,user_id,source,schedule_id,prompt,attachments,chain,status,created_at,author) VALUES(?1,?2,?3,?4,?5,?6,?7,'queued',?8,?9)",
+            params![r.chat_id, r.user_id, r.source, r.schedule_id, r.prompt, r.attachments.to_string(), json!(r.chain).to_string(), now(), r.author],
         )?;
         c.last_insert_rowid()
     };
@@ -237,7 +239,7 @@ async fn execute(st: &St, run_id: i64) -> Result<()> {
             "text": run.prompt,
             "attachments": run.attachments,
             "source": run.source,
-            "user": store::username(&st.db, run.user_id),
+            "user": run.author.clone().unwrap_or_else(|| store::username(&st.db, run.user_id)),
         }),
     )?;
     st.emit_project(chat.project_id, Event::Message { message: user_msg });
@@ -327,6 +329,7 @@ fn finish(st: &St, run_id: i64, mut outcome: TurnOutcome) -> Result<()> {
                     prompt: next,
                     attachments: json!([]),
                     chain: rest.to_vec(),
+                    author: run.author.clone(),
                 },
             )?;
         } else if chat.auto_deploy {
@@ -461,6 +464,32 @@ pub async fn cancel_run(st: &St, run_id: i64) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Stop one sub-agent of a chat, identified by the tool call that started it.
+/// When the CLI can't stop it on its own, the whole running prompt is stopped.
+/// Returns "agent" or "turn" to tell the caller which happened.
+pub async fn stop_agent(st: &St, chat_id: i64, tool_use_id: &str) -> Result<&'static str> {
+    let chat = get_chat(&st.db, chat_id)?;
+    let stopped = if chat.tool == "codex" {
+        st.codex.interrupt_agent(chat_id, tool_use_id).await
+    } else {
+        let s = st.runner.claude.lock().unwrap().get(&chat_id).cloned();
+        s.map(|s| s.stop_task(tool_use_id)).unwrap_or(false)
+    };
+    if stopped {
+        return Ok("agent");
+    }
+    let running: Vec<i64> = {
+        let c = st.db.conn();
+        let mut q = c.prepare("SELECT id FROM runs WHERE chat_id=?1 AND status='running'")?;
+        let v = q.query_map([chat_id], |r| r.get(0))?.filter_map(Result::ok).collect();
+        v
+    };
+    for r in running {
+        cancel_run(st, r).await?;
+    }
+    Ok("turn")
 }
 
 /// Kill the agent process of a chat (used when settings change or the chat is deleted).

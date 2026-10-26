@@ -2,6 +2,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A single SQLite connection shared behind a mutex. Every query in this app is
@@ -9,7 +10,7 @@ use std::sync::Arc;
 /// is reentrant so a helper that queries while its caller holds the connection
 /// cannot deadlock.
 #[derive(Clone)]
-pub struct Db(Arc<ReentrantMutex<Connection>>);
+pub struct Db(Arc<ReentrantMutex<Connection>>, Arc<parking_lot::RwLock<HashMap<String, Option<String>>>>);
 
 const MIGRATIONS: &[&str] = &[
     // v1
@@ -201,6 +202,16 @@ CREATE TABLE events(
 "#,
     // Telegram forum topic a deploy reports into (NULL = the group's General topic).
     "ALTER TABLE deploys ADD COLUMN tg_thread_id INTEGER;",
+    // v3: who sent a prompt from outside the panel (Telegram), plus indexes for hot lookups.
+    r#"
+ALTER TABLE runs ADD COLUMN author TEXT;
+CREATE INDEX IF NOT EXISTS requests_chat ON requests(chat_id, status);
+CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id, status);
+CREATE INDEX IF NOT EXISTS requests_status ON requests(status);
+CREATE INDEX IF NOT EXISTS chats_topic ON chats(tg_topic_id);
+CREATE INDEX IF NOT EXISTS chats_updated ON chats(archived, updated_at);
+CREATE INDEX IF NOT EXISTS schedules_project ON schedules(project_id);
+"#,
 ];
 
 impl Db {
@@ -209,7 +220,7 @@ impl Db {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
         )?;
-        let db = Db(Arc::new(ReentrantMutex::new(conn)));
+        let db = Db(Arc::new(ReentrantMutex::new(conn)), Default::default());
         db.migrate()?;
         Ok(db)
     }
@@ -233,12 +244,20 @@ impl Db {
         self.0.lock()
     }
 
+    /// Settings are read on hot paths (every event), so they are cached in
+    /// memory; all writes go through `set_setting`, which updates the cache.
     pub fn get_setting(&self, key: &str) -> Option<String> {
-        self.conn()
+        if let Some(v) = self.1.read().get(key) {
+            return v.clone();
+        }
+        let v: Option<String> = self
+            .conn()
             .query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
             .optional()
             .ok()
-            .flatten()
+            .flatten();
+        self.1.write().insert(key.to_string(), v.clone());
+        v
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
@@ -246,6 +265,7 @@ impl Db {
             "INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             params![key, value],
         )?;
+        self.1.write().insert(key.to_string(), Some(value.to_string()));
         Ok(())
     }
 

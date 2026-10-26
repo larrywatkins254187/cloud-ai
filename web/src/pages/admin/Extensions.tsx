@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryStatus } from "../../components/Loadable";
 import { Download, FileText, Pencil, Plus, Puzzle, RefreshCw, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Spinner, Tabs, Textarea, useAction, useConfirm } from "../../components/ui";
+import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Tabs, Textarea, useAction, useConfirm } from "../../components/ui";
 import { api, qs } from "../../lib/api";
 import type { Project, Tool } from "../../lib/types";
 
@@ -84,7 +85,7 @@ function Skills({ project }: { project: number | "" }) {
           New skill
         </Button>
       </div>
-      {q.isLoading && <Spinner />}
+      <QueryStatus q={q} />
       {q.data?.length === 0 && (
         <Card>
           <Empty icon={<Puzzle className="size-8" />} title="No skills yet">
@@ -223,7 +224,7 @@ function Plugins({ tool, project }: { tool: Tool; project: number | "" }) {
           </Button>
         </div>
       </Card>
-      {q.isLoading && <Spinner />}
+      <QueryStatus q={q} />
       {installed.length > 0 && (
         <Card>
           <div className="px-4 py-2.5 border-b border-border text-sm font-medium">Installed</div>
@@ -332,8 +333,8 @@ function Mcp({ tool, project }: { tool: Tool; project: number | "" }) {
           Add MCP server
         </Button>
       </div>
-      {q.isLoading && <Spinner />}
-      {servers.length === 0 && !q.isLoading && (
+      <QueryStatus q={q} />
+      {q.data !== undefined && servers.length === 0 && (
         <Card>
           <Empty title="No MCP servers">MCP servers give the agents extra tools (databases, browsers, APIs…).</Empty>
         </Card>
@@ -439,6 +440,7 @@ function Instructions({ tool, project }: { tool: Tool; project: number | "" }) {
           variant="primary"
           icon={<Save className="size-4" />}
           loading={busy}
+          disabled={q.data === undefined}
           onClick={() => run(() => api.put("/api/ext/instructions", { tool, scope, project: project || undefined, content: text }), "Saved")}
         >
           Save
@@ -448,7 +450,9 @@ function Instructions({ tool, project }: { tool: Tool; project: number | "" }) {
         {tool === "claude" ? "CLAUDE.md" : "AGENTS.md"} is read by {tool === "claude" ? "Claude Code" : "Codex"} at the start of every session
         {project ? " in this project" : " in every project"}.
       </p>
-      <Textarea value={text} onChange={(e) => setText(e.target.value)} className="font-mono text-xs min-h-[55dvh]" spellCheck={false} />
+      {/* Never show an empty editor for a file that just failed to load: saving it would wipe the file. */}
+      <QueryStatus q={q} />
+      {q.data !== undefined && <Textarea value={text} onChange={(e) => setText(e.target.value)} className="font-mono text-xs min-h-[55dvh]" spellCheck={false} />}
     </Card>
   );
 }

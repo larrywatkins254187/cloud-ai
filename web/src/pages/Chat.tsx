@@ -2,6 +2,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArrowLeft,
+  Bot,
+  PanelRight,
+  Square,
   Brain,
   ChevronRight,
   Clock,
@@ -15,7 +18,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { AgentPicker } from "../components/AgentPicker";
 import { Composer } from "../components/Composer";
@@ -23,10 +26,13 @@ import { Markdown } from "../components/Markdown";
 import { RequestCard } from "../components/RequestCard";
 import { Todos, ToolCard } from "../components/ToolCard";
 import { DeployBanner } from "../components/DeployStatus";
-import { Badge, Button, cx, IconButton, Modal, Spinner, StatusDot, Toggle, useAction, useConfirm, useConfirmWithOption, useToast } from "../components/ui";
+import { ErrorState, queryGate, Skeleton, StaleNotice } from "../components/Loadable";
+import { AgentsPanel, AgentStatusBadge, useStopAgent } from "../components/AgentsPanel";
+import { buildAgents, isAgentTool, type SubAgent } from "../lib/agents";
+import { Badge, Button, cx, IconButton, Modal, StatusDot, Toggle, useAction, useConfirm, useConfirmWithOption, useToast } from "../components/ui";
 import { api } from "../lib/api";
 import { duration, modeLabel, timeAgo, tokens, toolName } from "../lib/format";
-import { useStream, type MessagesData } from "../lib/live";
+import { useAgentProgress, useStream, type MessagesData } from "../lib/live";
 import type { Attachment, Chat as ChatT, Msg, Req } from "../lib/types";
 
 type Item =
@@ -49,7 +55,7 @@ function buildItems(messages: Msg[], requests: Req[]): Item[] {
   const items: Item[] = [];
   for (const m of messages) {
     if (m.data?.parent) continue;
-    if (m.kind === "tool_result") continue;
+    if (m.kind === "tool_result" || m.kind === "agent") continue;
     if (m.kind === "tool_use") {
       const id = m.data.id;
       if (m.data.name === "AskUserQuestion") continue;
@@ -62,6 +68,63 @@ function buildItems(messages: Msg[], requests: Req[]): Item[] {
   const at = (i: Item) => (i.type === "req" ? i.at : i.type === "tool" ? i.use.created_at : i.m.created_at);
   const idx = (i: Item) => (i.type === "req" ? 0 : i.type === "tool" ? i.use.id : i.m.id);
   return all.sort((a, b) => at(a).localeCompare(at(b)) || idx(a) - idx(b));
+}
+
+/** A sub-agent's own steps (its messages with the parent link removed). */
+function renderSteps(msgs: Msg[]) {
+  return buildItems(
+    msgs.map((c) => ({ ...c, data: { ...c.data, parent: null } })),
+    [],
+  ).map((c) => (c.type === "tool" ? <ToolCard key={c.use.id} use={c.use} result={c.result} /> : c.type === "msg" ? <MsgView key={c.m.id} m={c.m} /> : null));
+}
+
+const PANEL_KEY = "chat:agents-panel";
+function readPanelPref() {
+  // On phones the panel is a drawer over the chat, so it always starts closed.
+  if (window.innerWidth < 1024) return false;
+  try {
+    return localStorage.getItem(PANEL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The streaming reply of a running prompt. It subscribes to the stream on its own,
+ * so each streamed token re-renders only this, not the whole conversation.
+ */
+function LiveTail({ chatId, waiting, startedAt, onGrow }: { chatId: number; waiting: boolean; startedAt?: string | null; onGrow: () => void }) {
+  const stream = useStream(chatId);
+  // Markdown re-parsing can lag behind fast streams without blocking typing or scrolling.
+  const text = useDeferredValue(stream?.text ?? "");
+  useLayoutEffect(onGrow, [text, stream?.thinking, onGrow]);
+  return (
+    <div className="space-y-2">
+      {stream?.thinking && <Thinking text={stream.thinking} live />}
+      {text && <Markdown text={text + " ▍"} />}
+      <div className="flex items-center gap-2 text-xs text-muted">
+        <Loader2 className="size-3.5 animate-spin" />
+        {waiting ? "Waiting for your answer…" : stream?.activity || "Working…"}
+        {startedAt && <span>· {duration(startedAt)}</span>}
+      </div>
+    </div>
+  );
+}
+
+function MessagesSkeleton() {
+  return (
+    <div role="status" aria-label="Loading messages" className="space-y-4">
+      <div className="flex justify-end">
+        <Skeleton className="h-10 w-2/3 rounded-2xl" />
+      </div>
+      <div className="space-y-2">
+        <Skeleton className="h-3.5 w-11/12" />
+        <Skeleton className="h-3.5 w-4/5" />
+        <Skeleton className="h-3.5 w-2/3" />
+      </div>
+      <Skeleton className="h-9 w-full rounded-xl" />
+    </div>
+  );
 }
 
 function UserBubble({ m }: { m: Msg }) {
@@ -107,7 +170,7 @@ function Thinking({ text, live }: { text: string; live?: boolean }) {
   );
 }
 
-function MsgView({ m }: { m: Msg }) {
+const MsgView = memo(function MsgView({ m }: { m: Msg }) {
   switch (m.kind) {
     case "user":
       return <UserBubble m={m} />;
@@ -136,7 +199,7 @@ function MsgView({ m }: { m: Msg }) {
     default:
       return null;
   }
-}
+});
 
 function SettingsModal({ chat, open, onClose }: { chat: ChatT; open: boolean; onClose: () => void }) {
   const [v, setV] = useState({ tool: chat.tool, model: chat.model, effort: chat.effort, permission_mode: chat.permission_mode });
@@ -189,7 +252,6 @@ export default function Chat() {
   const id = Number(useParams().id);
   const chatQ = useQuery({ queryKey: ["chat", id], queryFn: () => api.get<ChatT>(`/api/chats/${id}`) });
   const msgsQ = useQuery({ queryKey: ["messages", id], queryFn: () => api.get<MessagesData>(`/api/chats/${id}/messages`), staleTime: Infinity });
-  const stream = useStream(id);
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   const [settings, setSettings] = useState(false);
@@ -200,17 +262,38 @@ export default function Chat() {
   const qc = useQueryClient();
   const nav = useNavigate();
   const { run } = useAction();
+  const progress = useAgentProgress(id);
+  const [panel, setPanelState] = useState(readPanelPref);
+  const [focus, setFocus] = useState<string | null>(null);
+  const setPanel = (open: boolean) => {
+    setPanelState(open);
+    try {
+      localStorage.setItem(PANEL_KEY, open ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  };
+  const stopAgent = useStopAgent(id);
 
   const items = useMemo(() => buildItems(msgsQ.data?.messages ?? [], msgsQ.data?.requests ?? []), [msgsQ.data]);
+  const chatActive = !!chatQ.data && ["running", "waiting", "queued"].includes(chatQ.data.status);
+  const agents = useMemo(() => buildAgents(msgsQ.data?.messages ?? [], chatActive), [msgsQ.data, chatActive]);
+  const agentByRef = useMemo(() => new Map<string, SubAgent>(agents.map((a) => [a.ref, a])), [agents]);
+  const runningAgents = agents.filter((a) => a.status === "running").length;
+  const openAgent = (ref: string) => {
+    setFocus(ref);
+    setPanel(true);
+  };
 
-  useLayoutEffect(() => {
+  const stickToBottom = useCallback(() => {
     const el = scroller.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items, stream]);
+  }, []);
+  useLayoutEffect(stickToBottom, [items, stickToBottom]);
 
-  const chat = chatQ.data;
-  if (chatQ.isLoading) return <Spinner page />;
-  if (!chat) return <div className="p-6 text-danger text-sm">{(chatQ.error as Error)?.message ?? "Chat not found"}</div>;
+  const gate = queryGate(chatQ);
+  if (gate) return gate;
+  const chat = chatQ.data!;
 
   const running = chat.status === "running" || chat.status === "waiting";
   const queued = (chat.active_runs ?? []).filter((r) => r.status === "queued");
@@ -237,7 +320,8 @@ export default function Chat() {
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex h-full min-h-0">
+    <div className="flex flex-col flex-1 min-w-0 h-full min-h-0">
       <div className="flex items-center gap-2 px-2 sm:px-4 h-14 border-b border-border bg-panel shrink-0">
         <Link to={`/projects/${chat.project_id}`} className="p-2 text-muted hover:text-text" aria-label="Back">
           <ArrowLeft className="size-5" />
@@ -256,6 +340,19 @@ export default function Chat() {
           {chat.cost_usd > 0 && <span>${chat.cost_usd.toFixed(2)}</span>}
           <span>{tokens(chat.input_tokens + chat.output_tokens)} tok</span>
         </div>
+        <button
+          title="Sub-agents"
+          aria-label="Sub-agents"
+          onClick={() => setPanel(!panel)}
+          className={cx(
+            "relative inline-flex h-9 items-center gap-1 rounded-lg px-2 text-muted hover:bg-panel-2 hover:text-text transition",
+            panel && "bg-panel-2 text-text",
+          )}
+        >
+          {agents.length > 0 ? <Bot className="size-4" /> : <PanelRight className="size-4" />}
+          {agents.length > 0 && <span className="text-xs tabular-nums">{runningAgents > 0 ? `${runningAgents}/${agents.length}` : agents.length}</span>}
+          {runningAgents > 0 && <span className="absolute top-1.5 right-1 size-1.5 rounded-full bg-accent pulse-dot" />}
+        </button>
         <IconButton title="Chat settings" onClick={() => setSettings(true)}>
           <SlidersHorizontal className="size-4" />
         </IconButton>
@@ -345,35 +442,37 @@ export default function Chat() {
               </Button>
             </div>
           )}
-          {msgsQ.isLoading && <Spinner />}
+          {msgsQ.data === undefined && (msgsQ.isError ? <ErrorState error={msgsQ.error} onRetry={msgsQ.refetch} retrying={msgsQ.isFetching} /> : <MessagesSkeleton />)}
+          {msgsQ.data !== undefined && msgsQ.isError && <StaleNotice q={msgsQ} />}
           {items.map((it) =>
             it.type === "req" ? (
               <RequestCard key={`r${it.r.id}`} r={it.r} />
             ) : it.type === "tool" ? (
-              <ToolCard key={it.use.id} use={it.use} result={it.result}>
-                {it.children.length > 0 && (
-                  <div className="space-y-2 border-l-2 border-border pl-3">
-                    {buildItems(it.children.map((c) => ({ ...c, data: { ...c.data, parent: null } })), []).map((c) =>
-                      c.type === "tool" ? <ToolCard key={c.use.id} use={c.use} result={c.result} /> : c.type === "msg" ? <MsgView key={c.m.id} m={c.m} /> : null,
+              (() => {
+                const agent = isAgentTool(it.use.data?.name) ? agentByRef.get(it.use.data.id) : undefined;
+                return (
+                  <ToolCard key={it.use.id} use={it.use} result={it.result} badge={agent ? <AgentStatusBadge status={agent.status} /> : undefined}>
+                    {agent && (
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" icon={<PanelRight className="size-3.5" />} onClick={() => openAgent(agent.ref)}>
+                          Open in sub-agents panel
+                        </Button>
+                        {agent.status === "running" && (
+                          <Button size="sm" variant="outline" className="text-danger" icon={<Square className="size-3.5" />} onClick={() => stopAgent(agent)}>
+                            Stop
+                          </Button>
+                        )}
+                      </div>
                     )}
-                  </div>
-                )}
-              </ToolCard>
+                    {it.children.length > 0 && <div className="space-y-2 border-l-2 border-border pl-3">{renderSteps(it.children)}</div>}
+                  </ToolCard>
+                );
+              })()
             ) : (
               <MsgView key={it.m.id} m={it.m} />
             ),
           )}
-          {running && (
-            <div className="space-y-2">
-              {stream?.thinking && <Thinking text={stream.thinking} live />}
-              {stream?.text && <Markdown text={stream.text + " ▍"} />}
-              <div className="flex items-center gap-2 text-xs text-muted">
-                <Loader2 className="size-3.5 animate-spin" />
-                {chat.status === "waiting" ? "Waiting for your answer…" : stream?.activity || "Working…"}
-                {current?.started_at && <span>· {duration(current.started_at)}</span>}
-              </div>
-            </div>
-          )}
+          {running && <LiveTail chatId={id} waiting={chat.status === "waiting"} startedAt={current?.started_at} onGrow={stickToBottom} />}
           {chat.status === "queued" && !running && (
             <div className="flex items-center gap-2 text-xs text-muted">
               <Clock className="size-3.5" /> Queued — waiting for a free slot
@@ -409,6 +508,24 @@ export default function Chat() {
         </div>
       </div>
       <SettingsModal chat={chat} open={settings} onClose={() => setSettings(false)} />
+    </div>
+      {panel && (
+        <>
+          {/* Phones: a drawer over the chat. Desktop: a column beside it. */}
+          <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setPanel(false)} />
+          <aside className="fixed inset-y-0 right-0 z-50 w-[min(420px,92vw)] border-l border-border shadow-xl lg:static lg:z-auto lg:w-[380px] lg:shadow-none lg:shrink-0">
+            <AgentsPanel
+              chatId={id}
+              agents={agents}
+              progress={progress}
+              focus={focus}
+              onFocus={setFocus}
+              onClose={() => setPanel(false)}
+              renderSteps={renderSteps}
+            />
+          </aside>
+        </>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
+import type { AgentProgress } from "./agents";
 import type { Msg, Req, ServerEvent } from "./types";
 import { live } from "./ws";
 
@@ -26,6 +27,27 @@ export function useStream(chatId: number): Stream | undefined {
     },
     () => streams.get(chatId),
   );
+}
+
+/** Latest live progress per sub-agent (by its tool call id), per chat. */
+const agentProgress = new Map<number, Record<string, AgentProgress>>();
+const progressSubs = new Set<() => void>();
+const EMPTY: Record<string, AgentProgress> = {};
+
+export function useAgentProgress(chatId: number): Record<string, AgentProgress> {
+  return useSyncExternalStore(
+    (cb) => {
+      progressSubs.add(cb);
+      return () => progressSubs.delete(cb);
+    },
+    () => agentProgress.get(chatId) ?? EMPTY,
+  );
+}
+
+function setAgentProgress(chatId: number, p: AgentProgress) {
+  if (!p.ref) return;
+  agentProgress.set(chatId, { ...(agentProgress.get(chatId) ?? {}), [p.ref]: p });
+  progressSubs.forEach((f) => f());
 }
 
 function upsertRequest(qc: QueryClient, r: Req) {
@@ -65,6 +87,14 @@ function handle(qc: QueryClient, ev: ServerEvent) {
       break;
     }
     case "delta": {
+      if (e.kind === "agent") {
+        try {
+          setAgentProgress(e.chat_id, JSON.parse(e.text));
+        } catch {
+          /* ignore */
+        }
+        break;
+      }
       const s = streams.get(e.chat_id) ?? { text: "", thinking: "", activity: "" };
       if (e.kind === "text") s.text += e.text;
       else if (e.kind === "thinking") s.thinking += e.text;
@@ -117,5 +147,20 @@ export function useLiveStatus() {
   return useSyncExternalStore(
     (cb) => live.onStatus(cb),
     () => live.up,
+  );
+}
+
+/** Browser online/offline state. */
+export function useOnline() {
+  return useSyncExternalStore(
+    (cb) => {
+      window.addEventListener("online", cb);
+      window.addEventListener("offline", cb);
+      return () => {
+        window.removeEventListener("online", cb);
+        window.removeEventListener("offline", cb);
+      };
+    },
+    () => navigator.onLine,
   );
 }
