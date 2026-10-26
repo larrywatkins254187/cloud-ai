@@ -115,16 +115,56 @@ pub async fn public_key(State(st): State<St>, AdminUser(_): AdminUser) -> ApiRes
     Ok(Json(json!({"public_key": key})))
 }
 
-pub async fn deploys(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path<i64>) -> ApiResult<Json<Value>> {
+#[derive(Deserialize)]
+pub struct DeployListQuery {
+    /// Only deploys older than this id (pagination).
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+pub async fn deploys(
+    State(st): State<St>,
+    AuthUser(u): AuthUser,
+    Path(pid): Path<i64>,
+    axum::extract::Query(lq): axum::extract::Query<DeployListQuery>,
+) -> ApiResult<Json<Value>> {
     if !can_access_project(&st.db, &u, pid) {
         return Err(ApiError::forbidden());
     }
+    let limit = lq.limit.unwrap_or(50).clamp(1, 200);
+    let c = st.db.conn();
+    let mut q = c.prepare(&format!(
+        "SELECT {} FROM deploys WHERE project_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3",
+        Deploy::LIST_COLS
+    ))?;
+    let v: Vec<Deploy> = q.query_map(params![pid, lq.before.unwrap_or(i64::MAX), limit], Deploy::from_row)?.collect::<Result<_, _>>()?;
+    Ok(Json(json!(v)))
+}
+
+/// Running deploys plus the latest few, across the projects the user can see.
+pub async fn active(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Json<Value>> {
     let c = st.db.conn();
     let mut q = c.prepare(
-        "SELECT id,project_id,triggered_by,kind,status,commit_sha,prev_sha,'' AS log,health,created_at,finished_at FROM deploys WHERE project_id=?1 ORDER BY id DESC LIMIT 50",
+        "SELECT d.id,d.project_id,d.triggered_by,d.kind,d.status,d.commit_sha,d.prev_sha,'' AS log,d.health,d.created_at,d.finished_at,d.tg_thread_id,p.name \
+         FROM deploys d LEFT JOIN projects p ON p.id=d.project_id \
+         WHERE d.status='running' OR d.id IN (SELECT id FROM deploys ORDER BY id DESC LIMIT 30) ORDER BY d.id DESC",
     )?;
-    let v: Vec<Deploy> = q.query_map([pid], Deploy::from_row)?.collect::<Result<_, _>>()?;
-    Ok(Json(json!(v)))
+    let rows: Vec<(Deploy, String)> = q
+        .query_map([], |r| Ok((Deploy::from_row(r)?, r.get::<_, Option<String>>(12)?.unwrap_or_default())))?
+        .collect::<Result<_, _>>()?;
+    drop(q);
+    drop(c);
+    let out: Vec<Value> = rows
+        .into_iter()
+        .filter(|(d, _)| can_access_project(&st.db, &u, d.project_id))
+        .take(10)
+        .map(|(d, name)| {
+            let mut v = json!(d);
+            v["project_name"] = json!(name);
+            v
+        })
+        .collect();
+    Ok(Json(Value::Array(out)))
 }
 
 pub async fn deploy_one(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Deploy>> {
@@ -139,7 +179,7 @@ pub async fn deploy(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path
     if !can_access_project(&st.db, &u, pid) {
         return Err(ApiError::forbidden());
     }
-    let id = deploy::start(&st, pid, &u.username, None).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
+    let id = deploy::start(&st, pid, &u.username, None, None).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
     Ok(Json(json!({"id": id})))
 }
 
@@ -155,6 +195,6 @@ pub async fn rollback(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Pat
         return Err(ApiError::forbidden());
     }
     let sha = b.sha.or(d.commit_sha).ok_or_else(|| ApiError::bad("no commit recorded for this deploy"))?;
-    let nid = deploy::start(&st, d.project_id, &u.username, Some(sha)).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
+    let nid = deploy::start(&st, d.project_id, &u.username, Some(sha), None).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
     Ok(Json(json!({"id": nid})))
 }

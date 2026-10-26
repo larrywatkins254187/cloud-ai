@@ -1,11 +1,94 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Save, Send } from "lucide-react";
+import { Download, RefreshCw, Save, Send } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea, Toggle, useAction, useToast } from "../../components/ui";
+import { Badge, Button, Card, Field, Input, PageHeader, Select, Spinner, Textarea, Toggle, useAction, useConfirm, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
 import { MODES } from "../../lib/format";
 
 type S = Record<string, string>;
+
+type Target = "claude" | "codex" | "app";
+type VersionInfo = { installed: string | null; latest: string | null; update_available: boolean; error?: string | null };
+type CheckResult = Record<Target, VersionInfo> & { idle: boolean };
+const TARGETS: { id: Target; name: string }[] = [
+  { id: "app", name: "cloud-ai" },
+  { id: "claude", name: "Claude Code" },
+  { id: "codex", name: "Codex" },
+];
+
+/** Check installed vs latest versions now and offer to update each one. */
+function UpdateCheck() {
+  const ask = useConfirm();
+  const toast = useToast();
+  const [checking, setChecking] = useState(false);
+  const [updating, setUpdating] = useState<Target | null>(null);
+  const [res, setRes] = useState<CheckResult | null>(null);
+  const check = async () => {
+    setChecking(true);
+    try {
+      setRes(await api.post<CheckResult>("/api/cli/check"));
+    } catch (e: any) {
+      toast(e.message, "danger");
+    } finally {
+      setChecking(false);
+    }
+  };
+  const update = async (t: Target, name: string, v: VersionInfo) => {
+    const ok = await ask({
+      title: `Update ${name}`,
+      message:
+        `Update ${name} from ${v.installed ?? "?"} to ${v.latest}?` +
+        (t === "app" ? "\n\nThe panel restarts after the update and reconnects by itself." : "\n\nIdle agent processes are stopped first; this only runs when no prompt or deploy is running."),
+      confirmLabel: "Update now",
+    });
+    if (!ok) return;
+    setUpdating(t);
+    try {
+      const r = await api.post<{ report: string[] }>("/api/cli/update", { only: t });
+      toast(r.report.join(" · "), r.report.some((x) => x.startsWith("ERROR")) ? "danger" : "ok");
+      if (t !== "app") await check();
+    } catch (e: any) {
+      toast(e.message, "danger");
+    } finally {
+      setUpdating(null);
+    }
+  };
+  return (
+    <div className="rounded-lg border border-border">
+      <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-border">
+        <span className="text-sm font-medium">Versions</span>
+        <Button size="sm" variant="outline" icon={<RefreshCw className="size-4" />} loading={checking} onClick={check}>
+          Check for updates now
+        </Button>
+      </div>
+      {!res ? (
+        <div className="px-3 py-3 text-xs text-muted">Click “Check for updates now” to compare installed and latest versions.</div>
+      ) : (
+        <div className="divide-y divide-border">
+          {TARGETS.map(({ id, name }) => {
+            const v = res[id];
+            return (
+              <div key={id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
+                <span className="w-28 font-medium">{name}</span>
+                <span className="text-muted text-xs flex-1 min-w-40">
+                  {v.installed ?? "not installed"} {v.latest ? `→ latest ${v.latest}` : v.error ? `· ${v.error}` : "· latest unknown"}
+                </span>
+                {v.update_available ? (
+                  <Button size="sm" variant="primary" icon={<Download className="size-4" />} loading={updating === id} disabled={!!updating} onClick={() => update(id, name, v)}>
+                    Update to {v.latest}
+                  </Button>
+                ) : v.latest && v.installed ? (
+                  <Badge tone="ok">up to date</Badge>
+                ) : null}
+              </div>
+            );
+          })}
+          {!res.idle && <div className="px-3 py-2 text-xs text-warn">Something is running now — updates wait until all prompts and deploys finish.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Settings() {
   const q = useQuery({ queryKey: ["settings"], queryFn: () => api.get<S>("/api/settings") });
@@ -16,7 +99,7 @@ export default function Settings() {
   useEffect(() => {
     if (q.data) setV(q.data);
   }, [q.data]);
-  if (!q.data) return <Spinner />;
+  if (!q.data) return <Spinner page />;
   const up = (k: string, val: string) => setV({ ...v, [k]: val });
   const bool = (k: string) => v[k] === "1" || v[k] === "true";
   const save = async () => {
@@ -122,6 +205,7 @@ export default function Settings() {
 
         <Card className="p-5 space-y-4">
           <div className="font-medium">Updates</div>
+          <UpdateCheck />
           <Toggle
             checked={bool("auto_update_enabled")}
             onChange={(b) => up("auto_update_enabled", b ? "1" : "0")}

@@ -2,12 +2,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDownToLine, ArrowUpFromLine, GitBranch, GitCommitHorizontal, RefreshCw, Undo2 } from "lucide-react";
 import { useState } from "react";
 import { Diff } from "../../components/Diff";
-import { Badge, Button, Card, cx, Empty, Input, Select, Spinner, useAction } from "../../components/ui";
+import { Badge, Button, Card, cx, Empty, Input, Select, Spinner, useAction, useConfirm } from "../../components/ui";
 import { api, qs } from "../../lib/api";
 import { timeAgo } from "../../lib/format";
 import type { Project } from "../../lib/types";
 
 export default function GitTab({ project, chatId }: { project: Project; chatId?: number }) {
+  const ask = useConfirm();
   const base = `/api/projects/${project.id}/git`;
   const extra = chatId ? { chat: chatId } : {};
   const status = useQuery({ queryKey: ["git", project.id, chatId, "status"], queryFn: () => api.get<any>(`${base}/status${qs(extra)}`) });
@@ -24,7 +25,7 @@ export default function GitTab({ project, chatId }: { project: Project; chatId?:
   const qc = useQueryClient();
   const reload = () => qc.invalidateQueries({ queryKey: ["git", project.id] });
 
-  if (status.isLoading) return <Spinner />;
+  if (status.isLoading) return <Spinner page />;
   if (!status.data?.repo)
     return (
       <Card>
@@ -103,7 +104,7 @@ export default function GitTab({ project, chatId }: { project: Project; chatId?:
                 <button
                   title="Discard changes"
                   className="text-muted hover:text-danger opacity-100 lg:opacity-0 group-hover:opacity-100"
-                  onClick={() => confirm(`Discard all changes to ${f.path}?`) && act(() => api.post(`${base}/discard`, { ...extra, path: f.path }), "Discarded")}
+                  onClick={async () => (await ask({ title: "Discard changes", message: `Discard all changes to ${f.path}?`, confirmLabel: "Discard", danger: true })) && act(() => api.post(`${base}/discard`, { ...extra, path: f.path }), "Discarded")}
                 >
                   <Undo2 className="size-3.5" />
                 </button>

@@ -74,9 +74,7 @@ export default function Terminal() {
       </div>
       <div className="flex-1 min-h-0">
         {list.isLoading ? (
-          <div className="p-6">
-            <Spinner />
-          </div>
+          <Spinner />
         ) : active ? (
           <Suspense fallback={<Spinner />}>
             <TerminalView key={active} id={active} />

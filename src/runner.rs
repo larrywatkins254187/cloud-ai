@@ -29,6 +29,32 @@ pub struct RunnerState {
     pub ram_blocked_since: Mutex<Option<Instant>>,
 }
 
+/// Remember the latest plan usage reported by a CLI, in memory and in the DB
+/// so the dashboard still has it after a restart.
+pub fn set_rate_limits(st: &St, tool: &str, mut v: Value) {
+    if v.is_null() {
+        return;
+    }
+    if let Some(o) = v.as_object_mut() {
+        o.insert("updatedAt".into(), json!(crate::util::now()));
+    }
+    crate::store::set_cli_info(st, &format!("rate_limits_{tool}"), &v);
+    st.runner.rate_limits.lock().unwrap().insert(tool.into(), v);
+}
+
+/// Plan usage per CLI: what the CLIs reported since start, else the saved copy.
+pub fn rate_limits(st: &St) -> Value {
+    let mut out = serde_json::Map::new();
+    let mem = st.runner.rate_limits.lock().unwrap().clone();
+    for tool in ["claude", "codex"] {
+        let v = mem.get(tool).cloned().unwrap_or_else(|| crate::store::get_cli_info(&st.db, &format!("rate_limits_{tool}")));
+        if !v.is_null() {
+            out.insert(tool.into(), v);
+        }
+    }
+    Value::Object(out)
+}
+
 pub struct NewRun<'a> {
     pub chat_id: i64,
     pub user_id: Option<i64>,
@@ -307,7 +333,9 @@ fn finish(st: &St, run_id: i64, mut outcome: TurnOutcome) -> Result<()> {
             if let Ok(project) = store::get_project(&st.db, chat.project_id) {
                 if project.deployable() {
                     let label = format!("auto (chat #{})", chat.id);
-                    crate::deploy::start(st, project.id, &label, None);
+                    // Report into the chat's Telegram topic when it has one.
+                    let thread = store::get_chat(&st.db, chat.id).ok().and_then(|c| c.tg_topic_id).filter(|t| *t > 0);
+                    crate::deploy::start(st, project.id, &label, None, thread);
                 }
             }
         }

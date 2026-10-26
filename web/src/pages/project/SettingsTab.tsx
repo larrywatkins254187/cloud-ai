@@ -4,11 +4,12 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { FolderPicker } from "../../components/FolderPicker";
 import { ProjectFields, type ProjectDraft } from "../../components/ProjectForm";
-import { Button, Card, Field, useAction } from "../../components/ui";
+import { Button, Card, Field, useAction, useConfirm } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { Project } from "../../lib/types";
 
 export default function SettingsTab({ project }: { project: Project }) {
+  const ask = useConfirm();
   const [v, setV] = useState<ProjectDraft>({ ...project });
   const { busy, run } = useAction();
   const qc = useQueryClient();
@@ -21,7 +22,7 @@ export default function SettingsTab({ project }: { project: Project }) {
     }
   };
   const remove = async () => {
-    if (!confirm(`Remove ${project.name} from the panel? Its chats and schedules are deleted; files on disk are kept.`)) return;
+    if (!(await ask({ title: "Remove project", message: `Remove ${project.name} from the panel? Its chats and schedules are deleted; files on disk are kept.`, confirmLabel: "Remove", danger: true }))) return;
     const r = await run(() => api.del(`/api/projects/${project.id}`), "Project removed");
     if (r) {
       qc.invalidateQueries({ queryKey: ["projects"] });

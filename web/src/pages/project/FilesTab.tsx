@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, File, FilePlus, Folder, FolderPlus, Pencil, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button, Card, cx, IconButton, Spinner, useAction } from "../../components/ui";
+import { Button, Card, cx, IconButton, Spinner, useAction, useConfirm } from "../../components/ui";
 import { api, qs } from "../../lib/api";
 import { bytes } from "../../lib/format";
 import type { Project } from "../../lib/types";
@@ -9,6 +9,7 @@ import type { Project } from "../../lib/types";
 type Item = { name: string; path: string; dir: boolean; size: number };
 
 export default function FilesTab({ project }: { project: Project }) {
+  const ask = useConfirm();
   const [dir, setDir] = useState("");
   const [file, setFile] = useState<string | null>(null);
   const base = `/api/projects/${project.id}/files`;
@@ -38,7 +39,7 @@ export default function FilesTab({ project }: { project: Project }) {
   };
 
   const remove = async (it: Item) => {
-    if (!confirm(`Delete ${it.path}${it.dir ? " and everything inside it" : ""}?`)) return;
+    if (!(await ask({ title: it.dir ? "Delete folder" : "Delete file", message: `Delete ${it.path}${it.dir ? " and everything inside it" : ""}?`, confirmLabel: "Delete", danger: true }))) return;
     await run(() => api.del(`${base}${qs({ path: it.path })}`));
     if (file === it.path) setFile(null);
     reload();
@@ -70,7 +71,7 @@ export default function FilesTab({ project }: { project: Project }) {
             <RefreshCw className="size-4" />
           </IconButton>
         </div>
-        {list.isLoading && <div className="p-4"><Spinner /></div>}
+        {list.isLoading && <Spinner />}
         {list.error && <div className="p-4 text-sm text-danger">{(list.error as Error).message}</div>}
         <div className="divide-y divide-border max-h-[65dvh] overflow-y-auto scroll-thin">
           {list.data?.items.map((it) => (
@@ -123,7 +124,7 @@ function Editor({ base, path, onClose }: { base: string; path: string; onClose: 
           <X className="size-4" />
         </IconButton>
       </div>
-      {q.isLoading && <div className="p-4"><Spinner /></div>}
+      {q.isLoading && <Spinner />}
       {q.data?.binary ? (
         <div className="p-6 text-sm text-muted">{q.data.too_large ? "File is too large to edit here." : "Binary file — not editable."}</div>
       ) : (

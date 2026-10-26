@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Pencil, Plus, Puzzle, RefreshCw, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Spinner, Tabs, Textarea, useAction } from "../../components/ui";
+import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Spinner, Tabs, Textarea, useAction, useConfirm } from "../../components/ui";
 import { api, qs } from "../../lib/api";
 import type { Project, Tool } from "../../lib/types";
 
@@ -56,6 +56,7 @@ function ScopeBar({
 }
 
 function Skills({ project }: { project: number | "" }) {
+  const ask = useConfirm();
   const q = useQuery({ queryKey: ["skills", project], queryFn: () => api.get<any[]>(`/api/ext/skills${qs({ project: project || undefined })}`) });
   const [edit, setEdit] = useState<{ path?: string; tool: Tool; scope: string; name: string; content: string } | null>(null);
   const { busy, run } = useAction();
@@ -109,7 +110,7 @@ function Skills({ project }: { project: number | "" }) {
             <IconButton
               title="Delete"
               onClick={async () => {
-                if (!confirm(`Delete skill ${s.name}?`)) return;
+                if (!(await ask({ title: "Delete skill", message: `Delete skill ${s.name}?`, confirmLabel: "Delete", danger: true }))) return;
                 await run(() => api.del(`/api/ext/skill${qs({ path: s.path })}`), "Deleted");
                 qc.invalidateQueries({ queryKey: ["skills"] });
               }}
@@ -165,6 +166,7 @@ function Skills({ project }: { project: number | "" }) {
 }
 
 function Plugins({ tool, project }: { tool: Tool; project: number | "" }) {
+  const ask = useConfirm();
   const q = useQuery({ queryKey: ["plugins", tool, project], queryFn: () => api.get<any>(`/api/ext/plugins${qs({ tool, project: project || undefined })}`) });
   const [filter, setFilter] = useState("");
   const [market, setMarket] = useState("");
@@ -196,7 +198,7 @@ function Plugins({ tool, project }: { tool: Tool; project: number | "" }) {
                 <button className="p-1 text-muted hover:text-text" title="Update" onClick={async () => (await run(() => api.post("/api/ext/marketplaces", { tool, action: "update", value: m.name }), "Updated"), reload())}>
                   <RefreshCw className="size-3.5" />
                 </button>
-                <button className="p-1 text-muted hover:text-danger" title="Remove" onClick={async () => confirm(`Remove ${m.name}?`) && (await run(() => api.post("/api/ext/marketplaces", { tool, action: "remove", value: m.name }), "Removed"), reload())}>
+                <button className="p-1 text-muted hover:text-danger" title="Remove" onClick={async () => (await ask({ title: "Remove marketplace", message: `Remove ${m.name}?`, confirmLabel: "Remove", danger: true })) && (await run(() => api.post("/api/ext/marketplaces", { tool, action: "remove", value: m.name }), "Removed"), reload())}>
                   <Trash2 className="size-3.5" />
                 </button>
               </span>
@@ -247,7 +249,7 @@ function Plugins({ tool, project }: { tool: Tool; project: number | "" }) {
                       Update
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" className="text-danger" onClick={() => confirm(`Uninstall ${id}?`) && act("uninstall", id)}>
+                  <Button size="sm" variant="ghost" className="text-danger" onClick={async () => (await ask({ title: "Uninstall plugin", message: `Uninstall ${id}?`, confirmLabel: "Uninstall", danger: true })) && act("uninstall", id)}>
                     Uninstall
                   </Button>
                 </div>
@@ -287,6 +289,7 @@ function Plugins({ tool, project }: { tool: Tool; project: number | "" }) {
 }
 
 function Mcp({ tool, project }: { tool: Tool; project: number | "" }) {
+  const ask = useConfirm();
   const q = useQuery({ queryKey: ["mcp", tool, project], queryFn: () => api.get<any>(`/api/ext/mcp${qs({ tool, project: project || undefined })}`) });
   const [add, setAdd] = useState(false);
   const [v, setV] = useState({ name: "", kind: "stdio", command: "", args: "", url: "", env: "", scope: "user" });
@@ -348,7 +351,7 @@ function Mcp({ tool, project }: { tool: Tool; project: number | "" }) {
             <IconButton
               title="Remove"
               onClick={async () => {
-                if (!confirm(`Remove ${s.name}?`)) return;
+                if (!(await ask({ title: "Remove MCP server", message: `Remove ${s.name}?`, confirmLabel: "Remove", danger: true }))) return;
                 await run(() => api.post("/api/ext/mcp", { tool, action: "remove", name: s.name, scope: s.scope ?? "user", project: project || undefined }), "Removed");
                 qc.invalidateQueries({ queryKey: ["mcp"] });
               }}

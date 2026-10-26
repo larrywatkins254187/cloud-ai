@@ -426,10 +426,13 @@ pub struct Deploy {
     pub health: Option<String>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    pub tg_thread_id: Option<i64>,
 }
 
 impl Deploy {
-    pub const COLS: &'static str = "id,project_id,triggered_by,kind,status,commit_sha,prev_sha,log,health,created_at,finished_at";
+    pub const COLS: &'static str = "id,project_id,triggered_by,kind,status,commit_sha,prev_sha,log,health,created_at,finished_at,tg_thread_id";
+    /// Same columns with an empty log, for lists.
+    pub const LIST_COLS: &'static str = "id,project_id,triggered_by,kind,status,commit_sha,prev_sha,'' AS log,health,created_at,finished_at,tg_thread_id";
     pub fn from_row(r: &Row) -> rusqlite::Result<Deploy> {
         Ok(Deploy {
             id: r.get(0)?,
@@ -443,6 +446,7 @@ impl Deploy {
             health: r.get(8)?,
             created_at: r.get(9)?,
             finished_at: r.get(10)?,
+            tg_thread_id: r.get(11)?,
         })
     }
 }

@@ -36,6 +36,9 @@ export default function Cli() {
 
   const claudeIn = s?.claude?.auth?.loggedIn;
   const codexIn = s?.codex?.auth?.loggedIn;
+  // Logged-in account email: from the CLI's auth status, else the account it last reported.
+  const claudeEmail = claudeIn ? (s?.claude?.auth?.email ?? s?.claude?.account?.email ?? null) : null;
+  const codexEmail = codexIn ? (s?.codex?.auth?.email ?? s?.codex?.account?.account?.email ?? null) : null;
   return (
     <>
       <PageHeader
@@ -62,7 +65,7 @@ export default function Cli() {
         }
       />
       {!s ? (
-        <Spinner />
+        <Spinner page />
       ) : (
         <div className="grid lg:grid-cols-2 gap-4">
           <Card className="p-5 space-y-3">
@@ -79,10 +82,11 @@ export default function Cli() {
               )}
             </div>
             <div>
+              {claudeIn && <Row label="Account">{claudeEmail ? <span className="font-medium break-all">{claudeEmail}</span> : <span className="text-muted">email not reported</span>}</Row>}
               <Row label="Installed">{s.claude.version ?? "not found"}</Row>
               <Row label="Latest">{s.claude.latest ?? "—"}</Row>
               <Row label="Auth">{s.claude.auth?.authMethod ?? s.claude.auth?.error ?? "—"}</Row>
-              {s.claude.account?.subscriptionType && <Row label="Plan">{s.claude.account.subscriptionType}</Row>}
+              {(s.claude.auth?.subscriptionType ?? s.claude.account?.subscriptionType) && <Row label="Plan">{s.claude.auth?.subscriptionType ?? s.claude.account.subscriptionType}</Row>}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="primary" icon={<LogIn className="size-4" />} onClick={loginClaude}>
@@ -113,9 +117,11 @@ export default function Cli() {
               )}
             </div>
             <div>
+              {codexIn && <Row label="Account">{codexEmail ? <span className="font-medium break-all">{codexEmail}</span> : <span className="text-muted">email not reported</span>}</Row>}
               <Row label="Installed">{s.codex.version ?? "not found"}</Row>
               <Row label="Latest">{s.codex.latest ?? "—"}</Row>
               <Row label="Status">{s.codex.auth?.detail ?? "—"}</Row>
+              {s.codex.account?.account?.planType && <Row label="Plan">{s.codex.account.account.planType}</Row>}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="primary" icon={<LogIn className="size-4" />} onClick={loginCodex}>

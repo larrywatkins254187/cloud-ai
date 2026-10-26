@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Pencil, Plug, Plus, Server as ServerIcon, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Badge, Button, Card, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, useAction, useToast } from "../../components/ui";
+import { Badge, Button, Card, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, useAction, useConfirm, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { Server } from "../../lib/types";
 
@@ -83,6 +83,7 @@ function ServerModal({ server, onClose, pubkey }: { server?: Server; onClose: ()
 }
 
 export default function Servers() {
+  const ask = useConfirm();
   const q = useQuery({ queryKey: ["servers"], queryFn: () => api.get<Server[]>("/api/servers") });
   const key = useQuery({ queryKey: ["pubkey"], queryFn: () => api.get<{ public_key: string }>("/api/ssh/public-key"), retry: false });
   const [edit, setEdit] = useState<Server | null | "new">(null);
@@ -158,7 +159,7 @@ export default function Servers() {
               <IconButton
                 title="Delete"
                 onClick={async () => {
-                  if (!confirm(`Delete server ${s.name}?`)) return;
+                  if (!(await ask({ title: "Delete server", message: `Delete server ${s.name}?`, confirmLabel: "Delete", danger: true }))) return;
                   await run(() => api.del(`/api/servers/${s.id}`), "Deleted");
                   qc.invalidateQueries({ queryKey: ["servers"] });
                 }}

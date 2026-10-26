@@ -5,6 +5,8 @@ import {
   Camera,
   Crosshair,
   Laptop,
+  Maximize2,
+  Minimize2,
   MousePointer2,
   Play,
   RotateCw,
@@ -31,7 +33,12 @@ type El = {
   rect: { x: number; y: number; width: number; height: number };
   styles: Record<string, string>;
   url: string;
+  /** Page scroll when picked (rect is relative to the viewport at that moment). */
+  scroll?: Scroll;
+  /** Inside a fixed/sticky element: does not move when the page scrolls. */
+  pinned?: boolean;
 };
+type Scroll = { x: number; y: number };
 type Note = { id: number; el: El; comment: string; shot?: Attachment };
 type Viewport = { width: number; height: number; mobile: boolean };
 
@@ -79,11 +86,12 @@ function useBrowser(projectId: number, onFrame: (b: Blob) => void) {
   const ws = useRef<WebSocket | null>(null);
   const pending = useRef(new Map<number, (v: any) => void>());
   const seq = useRef(1);
-  const [state, setState] = useState<{ url: string; title: string; connected: boolean; error?: string; viewport: Viewport }>({
+  const [state, setState] = useState<{ url: string; title: string; connected: boolean; error?: string; viewport: Viewport; scroll: Scroll }>({
     url: "",
     title: "",
     connected: false,
     viewport: VIEWPORTS[0].v,
+    scroll: { x: 0, y: 0 },
   });
   const [consoleLog, setConsole] = useState<any[]>([]);
   const frameCb = useRef(onFrame);
@@ -105,7 +113,15 @@ function useBrowser(projectId: number, onFrame: (b: Blob) => void) {
         }
         switch (v.type) {
           case "hello":
-            setState((x) => ({ ...x, connected: true, url: v.url, title: v.title, error: undefined, viewport: { width: v.width, height: v.height, mobile: v.mobile } }));
+            setState((x) => ({
+              ...x,
+              connected: true,
+              url: v.url,
+              title: v.title,
+              error: undefined,
+              viewport: { width: v.width, height: v.height, mobile: v.mobile },
+              scroll: v.scroll ?? { x: 0, y: 0 },
+            }));
             s.send(JSON.stringify({ type: "console" }));
             break;
           case "console_all":
@@ -113,6 +129,9 @@ function useBrowser(projectId: number, onFrame: (b: Blob) => void) {
             break;
           case "url":
             setState((x) => ({ ...x, url: v.url }));
+            break;
+          case "scroll":
+            setState((x) => ({ ...x, scroll: { x: v.x, y: v.y } }));
             break;
           case "title":
             setState((x) => ({ ...x, title: v.title }));
@@ -282,7 +301,11 @@ export default function PreviewTab({ project }: { project: Project }) {
   const { state, setState, send, request, consoleLog, setConsole } = useBrowser(project.id, onFrame);
   const [mode, setMode] = useState<"interact" | "select">("interact");
   const [address, setAddress] = useState("");
-  const [hover, setHover] = useState<El["rect"] | null>(null);
+  const [hover, setHover] = useState<El | null>(null);
+  const [full, setFull] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
+  const area = useRef<HTMLDivElement>(null);
+  const [areaSize, setAreaSize] = useState<{ w: number; h: number } | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [sendOpen, setSendOpen] = useState(false);
   const [showConsole, setShowConsole] = useState(false);
@@ -293,11 +316,54 @@ export default function PreviewTab({ project }: { project: Project }) {
 
   useEffect(() => setAddress(state.url), [state.url]);
 
+  // Fullscreen: real fullscreen where the browser allows it, otherwise the card
+  // just covers the window. Either way everything keeps working inside it.
+  const enterFull = () => {
+    setFull(true);
+    card.current?.requestFullscreen?.().catch(() => {});
+  };
+  const exitFull = () => {
+    setFull(false);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  };
+  useEffect(() => {
+    const onChange = () => !document.fullscreenElement && setFull(false);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  useEffect(() => {
+    if (!full) return;
+    // Esc goes to the page while it has focus in "Use" mode.
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !(mode === "interact" && document.activeElement === img.current) && exitFull();
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [full, mode]);
+  // In fullscreen, fit the page view into the free space.
+  useEffect(() => {
+    if (!full || !area.current) return setAreaSize(null);
+    const el = area.current;
+    const ro = new ResizeObserver(() => setAreaSize({ w: el.clientWidth - 16, h: el.clientHeight - 16 }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [full]);
+  const fitWidth = areaSize ? Math.max(200, Math.min(areaSize.w, (areaSize.h * vp.width) / vp.height)) : undefined;
+
   const toPage = (e: { clientX: number; clientY: number }) => {
     const r = img.current!.getBoundingClientRect();
     return { x: Math.round(((e.clientX - r.left) * vp.width) / r.width), y: Math.round(((e.clientY - r.top) * vp.height) / r.height) };
   };
   const scale = () => (img.current ? img.current.getBoundingClientRect().width / vp.width : 1);
+  /** Where to draw an element's box now: its rect moved by how far the page scrolled since it was picked. */
+  const boxStyle = (el: El) => {
+    const k = scale();
+    const dx = el.pinned || !el.scroll ? 0 : el.scroll.x - state.scroll.x;
+    const dy = el.pinned || !el.scroll ? 0 : el.scroll.y - state.scroll.y;
+    return { left: (el.rect.x + dx) * k, top: (el.rect.y + dy) * k, width: el.rect.width * k, height: el.rect.height * k };
+  };
 
   const navigate = (url: string) => url.trim() && send({ type: "navigate", url: url.trim() });
   const setViewport = (v: Viewport) => {
@@ -330,7 +396,7 @@ export default function PreviewTab({ project }: { project: Project }) {
       <Card className="p-3">
         <DevServer project={project} />
       </Card>
-      <Card className="overflow-hidden">
+      <Card ref={card} className={cx("overflow-hidden", full && "fixed inset-0 z-50 rounded-none border-0 flex flex-col")}>
         <div className="flex flex-wrap items-center gap-1.5 p-2 border-b border-border">
           <IconButton title="Back" onClick={() => send({ type: "back" })}>
             <ArrowLeft className="size-4" />
@@ -393,6 +459,9 @@ export default function PreviewTab({ project }: { project: Project }) {
           </Button>
           <div className="flex-1" />
           <span className="text-xs text-muted truncate max-w-[200px]">{state.connected ? state.title : "connecting…"}</span>
+          <IconButton title={full ? "Exit fullscreen (Esc)" : "Fullscreen"} onClick={full ? exitFull : enterFull}>
+            {full ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          </IconButton>
         </div>
         {state.error && (
           <div className="flex items-center gap-2 bg-danger-soft text-danger text-xs px-3 py-2">
@@ -402,9 +471,12 @@ export default function PreviewTab({ project }: { project: Project }) {
             </button>
           </div>
         )}
-        <div className="grid lg:grid-cols-[1fr_320px]">
-          <div className="bg-panel-2 p-2 flex justify-center min-h-[300px]">
-            <div className="relative w-full" style={{ maxWidth: vp.mobile ? Math.min(vp.width, 430) : undefined }}>
+        <div className={cx("grid lg:grid-cols-[1fr_320px]", full && "flex-1 min-h-0 grid-rows-[1fr_auto] lg:grid-rows-1")}>
+          <div ref={area} className={cx("bg-panel-2 p-2 flex justify-center", full ? "min-h-0 overflow-auto items-center" : "min-h-[300px]")}>
+            <div
+              className="relative w-full overflow-hidden rounded"
+              style={{ maxWidth: full ? fitWidth : vp.mobile ? Math.min(vp.width, 430) : undefined }}
+            >
               <img
                 ref={img}
                 alt=""
@@ -417,7 +489,7 @@ export default function PreviewTab({ project }: { project: Project }) {
                   if (now - lastMove.current < 40) return;
                   lastMove.current = now;
                   const p = toPage(e);
-                  if (mode === "select") request({ type: "hover", ...p }).then((r) => setHover(r.element?.rect ?? null));
+                  if (mode === "select") request({ type: "hover", ...p }).then((r) => setHover(r.element ?? null));
                   else send({ type: "mouse", event: "move", ...p, modifiers: mods(e) });
                 }}
                 onMouseDown={(e) => {
@@ -441,27 +513,19 @@ export default function PreviewTab({ project }: { project: Project }) {
                 }}
                 onContextMenu={(e) => e.preventDefault()}
               />
-              {mode === "select" && hover && (
-                <div
-                  className="absolute pointer-events-none border-2 border-accent bg-accent/15 rounded-sm"
-                  style={{ left: hover.x * scale(), top: hover.y * scale(), width: hover.width * scale(), height: hover.height * scale() }}
-                />
-              )}
-              {notes
-                .filter((n) => n.el.tag !== "page")
-                .map((n, i) => (
-                  <div
-                    key={n.id}
-                    className="absolute pointer-events-none border-2 border-warn rounded-sm"
-                    style={{ left: n.el.rect.x * scale(), top: n.el.rect.y * scale(), width: n.el.rect.width * scale(), height: n.el.rect.height * scale() }}
-                  >
-                    <span className="absolute -top-2.5 -left-2.5 size-5 rounded-full bg-warn text-black text-[11px] font-bold flex items-center justify-center">{i + 1}</span>
+              {mode === "select" && hover && <div className="absolute pointer-events-none border-2 border-accent bg-accent/15 rounded-sm" style={boxStyle(hover)} />}
+              {notes.map((n, i) =>
+                // Boxes only for elements on the page that is open now.
+                n.el.tag === "page" || n.el.url !== state.url ? null : (
+                  <div key={n.id} className="absolute pointer-events-none border-2 border-warn rounded-sm" style={boxStyle(n.el)}>
+                    <span className="absolute top-0 left-0 size-5 rounded-br-md bg-warn text-black text-[11px] font-bold flex items-center justify-center">{i + 1}</span>
                   </div>
-                ))}
+                ),
+              )}
               {!state.connected && !state.error && <div className="absolute inset-0 flex items-center justify-center text-sm text-muted">Starting browser…</div>}
             </div>
           </div>
-          <div className="border-t lg:border-t-0 lg:border-l border-border flex flex-col max-h-[80dvh]">
+          <div className={cx("border-t lg:border-t-0 lg:border-l border-border flex flex-col", full ? "max-h-[35dvh] lg:max-h-none min-h-0" : "max-h-[80dvh]")}>
             <div className="px-3 py-2 border-b border-border flex items-center gap-2">
               <span className="text-sm font-medium">Annotations</span>
               <Badge>{notes.length}</Badge>

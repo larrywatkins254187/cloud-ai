@@ -54,6 +54,7 @@ pub fn router() -> Router<St> {
         .route("/api/servers/{id}/test", post(servers::test))
         .route("/api/ssh/public-key", get(servers::public_key))
         .route("/api/projects/{id}/deploys", get(servers::deploys).post(servers::deploy))
+        .route("/api/deploys/active", get(servers::active))
         .route("/api/deploys/{id}", get(servers::deploy_one))
         .route("/api/deploys/{id}/rollback", post(servers::rollback))
         // git
@@ -74,6 +75,7 @@ pub fn router() -> Router<St> {
         // system
         .route("/api/settings", get(system::get_settings).put(system::put_settings))
         .route("/api/system", get(system::status))
+        .route("/api/usage/refresh", post(system::refresh_usage))
         .route("/api/events", get(system::events))
         .route("/api/models", get(system::models))
         .route("/api/models/refresh", post(system::refresh_models))

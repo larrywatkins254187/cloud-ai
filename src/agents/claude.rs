@@ -426,7 +426,7 @@ impl ClaudeSession {
                 *self.last_used.lock().unwrap() = Instant::now();
             }
             "rate_limit_event" => {
-                st.runner.rate_limits.lock().unwrap().insert("claude".into(), v["rate_limit_info"].clone());
+                crate::runner::set_rate_limits(st, "claude", v["rate_limit_info"].clone());
             }
             "control_request" => {
                 let s = self.clone();

@@ -36,7 +36,7 @@ export default function App() {
   if (me.isLoading) {
     return (
       <div className="h-full flex items-center justify-center">
-        <Spinner className="size-6" />
+        <Spinner inline className="size-6" />
       </div>
     );
   }

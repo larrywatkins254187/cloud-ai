@@ -88,6 +88,8 @@ function handle(qc: QueryClient, ev: ServerEvent) {
       break;
     case "deploy_updated":
       qc.invalidateQueries({ queryKey: ["deploys", e.deploy.project_id] });
+      qc.invalidateQueries({ queryKey: ["deploy-history", e.deploy.project_id] });
+      qc.invalidateQueries({ queryKey: ["active-deploys"] });
       qc.setQueryData(["deploy", e.deploy.id], (old: any) => (old ? { ...e.deploy, log: old.log } : old));
       break;
     case "deploy_log":

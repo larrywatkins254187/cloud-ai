@@ -1,5 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
-import { Activity, Bot, Cpu, Hourglass, MemoryStick, MessageSquare, Play } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Activity, Bot, Cpu, Hourglass, MemoryStick, MessageSquare, Play, RefreshCw } from "lucide-react";
+import { DeploysCard } from "../components/DeployStatus";
 import { Link } from "react-router";
 import { Badge, Card, cx, Empty, PageHeader, StatusDot } from "../components/ui";
 import { api } from "../lib/api";
@@ -45,13 +47,56 @@ function UsageBar({ label, pct, resets }: { label: string; pct: number; resets?:
   );
 }
 
+/** Label for a usage window from its length in minutes (Codex reports it). */
+function windowLabel(mins: number | undefined, fallback: string) {
+  if (!mins) return fallback;
+  if (mins === 10080) return "Weekly";
+  if (mins % 1440 === 0) return `${mins / 1440}-day window`;
+  if (mins % 60 === 0) return `${mins / 60}-hour window`;
+  return `${mins}-minute window`;
+}
+
+const STALE_MS = 10 * 60 * 1000;
+
 function PlanUsage({ limits }: { limits: any }) {
+  const qc = useQueryClient();
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const claude = limits?.claude?.unifiedWindows;
   const codex = limits?.codex;
-  if (!claude && !codex) return null;
+  const codexAt = codex?.updatedAt ? new Date(codex.updatedAt).getTime() : 0;
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const r = await api.post<{ rate_limits: any; error?: string }>("/api/usage/refresh");
+      setError(r.error ?? null);
+      qc.setQueryData(["system"], (old: any) => (old ? { ...old, rate_limits: r.rate_limits } : old));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [qc]);
+
+  // Codex only reports usage while it runs, so ask for it when ours is old.
+  const asked = useRef(false);
+  useEffect(() => {
+    if (limits && !asked.current && Date.now() - codexAt > STALE_MS) {
+      asked.current = true;
+      refresh();
+    }
+  }, [limits, codexAt, refresh]);
+
+  if (!claude && !codex && !refreshing && !error) return null;
   return (
     <Card className="p-4 space-y-3">
-      <div className="text-sm font-medium">Plan usage</div>
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium">Plan usage</div>
+        <button className="p-1 text-muted hover:text-text" title="Refresh usage" aria-label="Refresh usage" onClick={refresh} disabled={refreshing}>
+          <RefreshCw className={cx("size-3.5", refreshing && "animate-spin")} />
+        </button>
+      </div>
       {claude && (
         <div className="space-y-2">
           <div className="text-xs font-medium">Claude</div>
@@ -59,13 +104,22 @@ function PlanUsage({ limits }: { limits: any }) {
           {claude.seven_day && <UsageBar label="Weekly" pct={(claude.seven_day.utilization ?? 0) * 100} resets={claude.seven_day.resetsAt} />}
         </div>
       )}
-      {codex && (
-        <div className="space-y-2">
-          <div className="text-xs font-medium">Codex</div>
-          {codex.primary && <UsageBar label="Short window" pct={codex.primary.usedPercent ?? 0} resets={codex.primary.resetsAt} />}
-          {codex.secondary && <UsageBar label="Weekly" pct={codex.secondary.usedPercent ?? 0} resets={codex.secondary.resetsAt} />}
+      <div className="space-y-2">
+        <div className="text-xs font-medium flex justify-between">
+          <span>Codex{codex?.planType ? ` · ${codex.planType}` : ""}</span>
+          {codexAt > 0 && <span className="font-normal text-muted">updated {timeAgo(codex.updatedAt)}</span>}
         </div>
-      )}
+        {codex?.primary && <UsageBar label={windowLabel(codex.primary.windowDurationMins, "Short window")} pct={codex.primary.usedPercent ?? 0} resets={codex.primary.resetsAt} />}
+        {codex?.secondary && <UsageBar label={windowLabel(codex.secondary.windowDurationMins, "Weekly")} pct={codex.secondary.usedPercent ?? 0} resets={codex.secondary.resetsAt} />}
+        {codex?.credits?.hasCredits && !codex.credits.unlimited && codex.credits.balance != null && (
+          <div className="text-xs text-muted">Credits left: {codex.credits.balance}</div>
+        )}
+        {!codex?.primary && !codex?.secondary && (
+          <div className="text-xs text-muted" title={error ?? undefined}>
+            {refreshing ? "Loading Codex usage…" : error ? "Not available — is Codex installed and logged in with ChatGPT?" : "No usage reported yet"}
+          </div>
+        )}
+      </div>
     </Card>
   );
 }
@@ -151,6 +205,7 @@ export default function Dashboard() {
               </div>
             </Card>
           )}
+          <DeploysCard />
           {(queue.data?.runs?.length ?? 0) > 0 && (
             <Card>
               <div className="px-4 py-3 border-b border-border text-sm font-medium">Running & queued</div>

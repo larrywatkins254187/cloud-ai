@@ -80,6 +80,15 @@ async fn topic_for(st: &St, chat: &Chat) -> Option<i64> {
 
 /// Send an HTML message to the group (into the chat's topic when given).
 pub async fn send(st: &St, chat: Option<&Chat>, text: &str, keyboard: Option<Value>) -> Result<i64> {
+    let thread = match chat {
+        Some(c) => topic_for(st, c).await,
+        None => None,
+    };
+    send_to(st, thread, text, keyboard).await
+}
+
+/// Send an HTML message to the group, into forum topic `thread` (None = General).
+async fn send_to(st: &St, thread: Option<i64>, text: &str, keyboard: Option<Value>) -> Result<i64> {
     let gid = group(st).ok_or_else(|| anyhow!("Telegram group not set"))?;
     let mut body = json!({
         "chat_id": gid,
@@ -87,10 +96,8 @@ pub async fn send(st: &St, chat: Option<&Chat>, text: &str, keyboard: Option<Val
         "parse_mode": "HTML",
         "disable_web_page_preview": true,
     });
-    if let Some(c) = chat {
-        if let Some(t) = topic_for(st, c).await {
-            body["message_thread_id"] = json!(t);
-        }
+    if let Some(t) = thread.filter(|t| *t > 0) {
+        body["message_thread_id"] = json!(t);
     }
     if let Some(k) = keyboard {
         body["reply_markup"] = json!({"inline_keyboard": k});
@@ -260,7 +267,7 @@ async fn on_event(st: &St, ev: Event) -> Result<()> {
             };
             let kb = (deploy.status == "success" && deploy.prev_sha.is_some())
                 .then(|| json!([[{"text": "↩️ Rollback to previous", "callback_data": format!("rb:{}", deploy.id)}]]));
-            send(st, None, &text, kb).await?;
+            send_to(st, deploy.tg_thread_id, &text, kb).await?;
         }
         Event::Notice { level, text } => {
             let icon = match level.as_str() {
@@ -439,6 +446,11 @@ fn same_group(st: &St, chat_id: &Value) -> bool {
     group(st).map(|g| g == chat_id.to_string().trim_matches('"')).unwrap_or(false)
 }
 
+/// The forum topic a message belongs to (None for the General topic).
+fn topic_of(msg: &Value) -> Option<i64> {
+    (msg["is_topic_message"] == true).then(|| msg["message_thread_id"].as_i64()).flatten()
+}
+
 async fn reply(st: &St, msg: &Value, text: &str, keyboard: Option<Value>) -> Result<i64> {
     let mut body = json!({"chat_id": msg["chat"]["id"], "text": text, "parse_mode": "HTML"});
     if let Some(t) = msg["message_thread_id"].as_i64() {
@@ -537,6 +549,8 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
     let by = display_name(&cb["from"]);
     let parts: Vec<&str> = data.split(':').collect();
     let message_id = cb["message"]["message_id"].as_i64().unwrap_or(0);
+    // Forum topic the button was pressed in, so follow-ups stay in that topic.
+    let thread = topic_of(&cb["message"]);
     match parts.as_slice() {
         ["ap", req, allow] => {
             let req: i64 = req.parse()?;
@@ -579,9 +593,9 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
         ["dp", pid] => {
             let pid: i64 = pid.parse()?;
             let p = get_project(&st.db, pid)?;
-            send(
+            send_to(
                 st,
-                None,
+                thread,
                 &format!("Deploy <b>{}</b> now?", html_escape(&p.name)),
                 Some(json!([[{"text": "✅ Yes, deploy", "callback_data": format!("dc:{pid}")}, {"text": "Cancel", "callback_data": "dx"}]])),
             )
@@ -590,7 +604,7 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
         }
         ["dc", pid] => {
             let pid: i64 = pid.parse()?;
-            let id = crate::deploy::start(st, pid, &by, None).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
+            let id = crate::deploy::start(st, pid, &by, None, thread).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
             edit(st, message_id, &format!("🚀 Deploy #{id} started by {}", html_escape(&by)), None).await;
             Ok("Deploy started".into())
         }
@@ -598,9 +612,9 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
             let did: i64 = did.parse()?;
             let d = store::get_deploy(&st.db, did)?;
             let sha = d.prev_sha.clone().unwrap_or_default();
-            send(
+            send_to(
                 st,
-                None,
+                thread,
                 &format!("Roll back to <code>{}</code>?", html_escape(&sha[..sha.len().min(8)])),
                 Some(json!([[{"text": "↩️ Yes, roll back", "callback_data": format!("rc:{did}")}, {"text": "Cancel", "callback_data": "dx"}]])),
             )
@@ -611,7 +625,7 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
             let did: i64 = did.parse()?;
             let d = store::get_deploy(&st.db, did)?;
             let sha = d.prev_sha.ok_or_else(|| anyhow!("no previous version known"))?;
-            crate::deploy::start(st, d.project_id, &by, Some(sha)).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
+            crate::deploy::start(st, d.project_id, &by, Some(sha), thread).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
             edit(st, message_id, &format!("↩️ Rollback started by {}", html_escape(&by)), None).await;
             Ok("Rollback started".into())
         }
@@ -656,4 +670,17 @@ pub async fn test(st: &St) -> Result<Value> {
         send(st, None, "✅ cloud-ai is connected to this group.", None).await?;
     }
     Ok(me)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn topic_of_message() {
+        assert_eq!(topic_of(&json!({"message_thread_id": 42, "is_topic_message": true})), Some(42));
+        // General topic, or a plain reply thread in a non-forum group.
+        assert_eq!(topic_of(&json!({"message_id": 1})), None);
+        assert_eq!(topic_of(&json!({"message_thread_id": 7})), None);
+    }
 }

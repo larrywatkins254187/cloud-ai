@@ -30,7 +30,7 @@ pub async fn status(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Js
             "max_codex": settings::get_i64(&st.db, "max_codex"),
             "ram_guard_mb": settings::get_i64(&st.db, "ram_guard_mb"),
         },
-        "rate_limits": *st.runner.rate_limits.lock().unwrap(),
+        "rate_limits": crate::runner::rate_limits(&st),
         "version": env!("CARGO_PKG_VERSION"),
         "timezone": settings::get(&st.db, "timezone"),
     });
@@ -44,6 +44,25 @@ pub async fn status(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Js
         v["telegram_configured"] = json!(!settings::get(&st.db, "telegram_token").is_empty());
     }
     Ok(Json(v))
+}
+
+/// Fetch fresh plan usage from Codex now (at most once a minute).
+pub async fn refresh_usage(State(st): State<St>, AuthUser(_): AuthUser) -> ApiResult<Json<Value>> {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let recent = {
+        let mut l = LAST.lock().unwrap();
+        let recent = l.map(|t| t.elapsed() < std::time::Duration::from_secs(60)).unwrap_or(false);
+        if !recent {
+            *l = Some(std::time::Instant::now());
+        }
+        recent
+    };
+    if !recent {
+        if let Err(e) = crate::agents::codex::refresh_rate_limits(&st).await {
+            return Ok(Json(json!({"rate_limits": crate::runner::rate_limits(&st), "error": format!("{e:#}")})));
+        }
+    }
+    Ok(Json(json!({"rate_limits": crate::runner::rate_limits(&st)})))
 }
 
 pub async fn events(State(st): State<St>, AdminUser(_): AdminUser) -> ApiResult<Json<Value>> {

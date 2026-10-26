@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, CalendarClock, Pencil, Play, Plus, Trash2, X } from
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { AgentPicker } from "../components/AgentPicker";
-import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle, useAction } from "../components/ui";
+import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle, useAction, useConfirm } from "../components/ui";
 import { api } from "../lib/api";
 import { modeLabel, timeAgo, toolName } from "../lib/format";
 import type { Chat, Project, Schedule } from "../lib/types";
@@ -297,6 +297,7 @@ function describe(s: Schedule) {
 }
 
 export default function Schedules() {
+  const ask = useConfirm();
   const q = useQuery({ queryKey: ["schedules"], queryFn: () => api.get<{ schedules: Schedule[]; timezone: string }>("/api/schedules") });
   const [edit, setEdit] = useState<{ d: Draft; id?: number } | null>(null);
   const { run } = useAction();
@@ -365,7 +366,7 @@ export default function Schedules() {
                 <IconButton
                   title="Delete"
                   onClick={async () => {
-                    if (!confirm(`Delete schedule "${s.name}"?`)) return;
+                    if (!(await ask({ title: "Delete schedule", message: `Delete schedule "${s.name}"?`, confirmLabel: "Delete", danger: true }))) return;
                     await run(() => api.del(`/api/schedules/${s.id}`), "Deleted");
                     reload();
                   }}

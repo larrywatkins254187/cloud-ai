@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { FileCode2, GitBranch, Globe, MessageSquare, Rocket, Settings } from "lucide-react";
+import { FileCode2, GitBranch, Globe, History, MessageSquare, Rocket, Settings } from "lucide-react";
 import { useParams, useSearchParams } from "react-router";
 import { Badge, PageHeader, Spinner, Tabs } from "../components/ui";
 import { api } from "../lib/api";
@@ -9,10 +9,11 @@ import ChatsTab from "./project/ChatsTab";
 import DeployTab from "./project/DeployTab";
 import FilesTab from "./project/FilesTab";
 import GitTab from "./project/GitTab";
+import HistoryTab from "./project/HistoryTab";
 import PreviewTab from "./project/PreviewTab";
 import SettingsTab from "./project/SettingsTab";
 
-type Tab = "chats" | "files" | "git" | "deploy" | "preview" | "settings";
+type Tab = "chats" | "files" | "git" | "deploy" | "history" | "preview" | "settings";
 
 export default function Project() {
   const id = Number(useParams().id);
@@ -20,7 +21,7 @@ export default function Project() {
   const tab = (sp.get("tab") as Tab) || "chats";
   const admin = useIsAdmin();
   const q = useQuery({ queryKey: ["project", id], queryFn: () => api.get<P>(`/api/projects/${id}`) });
-  if (q.isLoading) return <Spinner />;
+  if (q.isLoading) return <Spinner page />;
   if (q.error || !q.data) return <div className="text-danger text-sm">{(q.error as Error)?.message ?? "Not found"}</div>;
   const p = q.data;
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -28,6 +29,7 @@ export default function Project() {
     { id: "files", label: "Files", icon: <FileCode2 className="size-4" /> },
     { id: "git", label: "Git", icon: <GitBranch className="size-4" /> },
     { id: "deploy", label: "Deploy", icon: <Rocket className="size-4" /> },
+    { id: "history", label: "Deploy history", icon: <History className="size-4" /> },
     { id: "preview", label: "Preview", icon: <Globe className="size-4" /> },
   ];
   if (admin) tabs.push({ id: "settings", label: "Settings", icon: <Settings className="size-4" /> });
@@ -51,6 +53,7 @@ export default function Project() {
       {tab === "files" && <FilesTab project={p} />}
       {tab === "git" && <GitTab project={p} />}
       {tab === "deploy" && <DeployTab project={p} />}
+      {tab === "history" && <HistoryTab project={p} />}
       {tab === "preview" && <PreviewTab project={p} />}
       {tab === "settings" && admin && <SettingsTab project={p} />}
     </>

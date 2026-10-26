@@ -108,6 +108,9 @@ pub struct Page {
     viewport: Mutex<(u32, u32, bool)>,
     viewers: AtomicUsize,
     console: Mutex<VecDeque<Value>>,
+    /// Page scroll offset of the last frame (CSS px), so the panel can keep
+    /// annotation boxes on their elements while the page scrolls.
+    scroll: Mutex<(f64, f64)>,
 }
 
 struct Browser {
@@ -239,6 +242,17 @@ fn spawn_event_loop(b: Arc<Browser>) {
                     tokio::spawn(async move {
                         let _ = cdp.call(Some(&s), "Page.screencastFrameAck", json!({"sessionId": ack})).await;
                     });
+                    let md = &params["metadata"];
+                    let sc = (md["scrollOffsetX"].as_f64().unwrap_or(0.0), md["scrollOffsetY"].as_f64().unwrap_or(0.0));
+                    let changed = {
+                        let mut last = page.scroll.lock().unwrap();
+                        let changed = (last.0 - sc.0).abs() > 0.5 || (last.1 - sc.1).abs() > 0.5;
+                        *last = sc;
+                        changed
+                    };
+                    if changed {
+                        let _ = page.notices.send(json!({"type": "scroll", "x": sc.0, "y": sc.1}));
+                    }
                     if let Some(data) = params["data"].as_str() {
                         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
                             let _ = page.frames.send(Arc::new(bytes));
@@ -358,6 +372,7 @@ async fn page_for(st: &St, project_id: i64) -> Result<(Arc<Browser>, Arc<Page>)>
         viewport: Mutex::new((1280, 800, false)),
         viewers: AtomicUsize::new(0),
         console: Mutex::new(VecDeque::new()),
+        scroll: Mutex::new((0.0, 0.0)),
     });
     b.pages.lock().unwrap().insert(project_id, page.clone());
     for m in ["Page.enable", "Runtime.enable", "Log.enable"] {
@@ -434,7 +449,15 @@ const PICK_JS: &str = r#"(() => {
   };
   const r = el.getBoundingClientRect();
   const cs = getComputedStyle(el);
+  // Fixed/sticky elements stay put on screen when the page scrolls.
+  let pinned = false;
+  for (let a = el; a && a.nodeType === 1; a = a.parentElement) {
+    const p = getComputedStyle(a).position;
+    if (p === 'fixed' || p === 'sticky') { pinned = true; break; }
+  }
   return {
+    scroll: { x: window.scrollX, y: window.scrollY },
+    pinned,
     selector: sel(el),
     tag: el.tagName.toLowerCase(),
     text: (el.innerText || el.textContent || '').trim().slice(0, 400),
@@ -630,7 +653,8 @@ async fn session(st: St, project_id: i64, user_id: i64, mut socket: WebSocket) -
         start_screencast(&b, &page).await?;
     }
     let (w, h, mobile) = *page.viewport.lock().unwrap();
-    let hello = json!({"type": "hello", "url": *page.url.lock().unwrap(), "title": *page.title.lock().unwrap(), "width": w, "height": h, "mobile": mobile});
+    let (sx, sy) = *page.scroll.lock().unwrap();
+    let hello = json!({"type": "hello", "url": *page.url.lock().unwrap(), "title": *page.title.lock().unwrap(), "width": w, "height": h, "mobile": mobile, "scroll": {"x": sx, "y": sy}});
     socket.send(WsMsg::Text(hello.to_string().into())).await?;
     // Ask for a fresh frame even when the page is static.
     let _ = b.cdp.call(Some(&page.session), "Runtime.evaluate", json!({"expression": "void 0"})).await;

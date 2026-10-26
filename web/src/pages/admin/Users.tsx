@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Pencil, Plus, ShieldOff, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Badge, Button, Card, Field, IconButton, Input, Modal, PageHeader, Select, Toggle, useAction } from "../../components/ui";
+import { Badge, Button, Card, Field, IconButton, Input, Modal, PageHeader, Select, Toggle, useAction, useConfirm } from "../../components/ui";
 import { api } from "../../lib/api";
 import { useAuth } from "../../lib/auth";
 import { timeAgo } from "../../lib/format";
@@ -87,6 +87,7 @@ function UserModal({ user, onClose }: { user?: User; onClose: () => void }) {
 }
 
 export default function Users() {
+  const ask = useConfirm();
   const me = useAuth().user;
   const q = useQuery({ queryKey: ["users"], queryFn: () => api.get<User[]>("/api/users") });
   const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.get<Project[]>("/api/projects") });
@@ -125,7 +126,7 @@ export default function Users() {
             <IconButton
               title="Reset 2FA"
               onClick={async () => {
-                if (!confirm(`Reset 2FA for ${u.username}? They will scan a new QR code on next login.`)) return;
+                if (!(await ask({ title: "Reset 2FA", message: `Reset 2FA for ${u.username}? They will scan a new QR code on next login.`, confirmLabel: "Reset 2FA", danger: true }))) return;
                 await run(() => api.post(`/api/users/${u.id}/reset-2fa`), "2FA reset");
                 qc.invalidateQueries({ queryKey: ["users"] });
               }}
@@ -136,7 +137,7 @@ export default function Users() {
               <IconButton
                 title="Delete"
                 onClick={async () => {
-                  if (!confirm(`Delete ${u.username}?`)) return;
+                  if (!(await ask({ title: "Delete user", message: `Delete ${u.username}?`, confirmLabel: "Delete", danger: true }))) return;
                   await run(() => api.del(`/api/users/${u.id}`), "Deleted");
                   qc.invalidateQueries({ queryKey: ["users"] });
                 }}

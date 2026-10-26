@@ -191,6 +191,7 @@ export interface Deploy {
   health: string | null;
   created_at: string;
   finished_at: string | null;
+  tg_thread_id?: number | null;
 }
 
 export type ServerEvent =

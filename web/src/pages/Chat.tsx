@@ -22,7 +22,8 @@ import { Composer } from "../components/Composer";
 import { Markdown } from "../components/Markdown";
 import { RequestCard } from "../components/RequestCard";
 import { Todos, ToolCard } from "../components/ToolCard";
-import { Badge, Button, cx, IconButton, Modal, Spinner, StatusDot, Toggle, useAction, useToast } from "../components/ui";
+import { DeployBanner } from "../components/DeployStatus";
+import { Badge, Button, cx, IconButton, Modal, Spinner, StatusDot, Toggle, useAction, useConfirm, useConfirmWithOption, useToast } from "../components/ui";
 import { api } from "../lib/api";
 import { duration, modeLabel, timeAgo, tokens, toolName } from "../lib/format";
 import { useStream, type MessagesData } from "../lib/live";
@@ -194,6 +195,8 @@ export default function Chat() {
   const [settings, setSettings] = useState(false);
   const [menu, setMenu] = useState(false);
   const toast = useToast();
+  const ask = useConfirm();
+  const askWithOption = useConfirmWithOption();
   const qc = useQueryClient();
   const nav = useNavigate();
   const { run } = useAction();
@@ -206,7 +209,7 @@ export default function Chat() {
   }, [items, stream]);
 
   const chat = chatQ.data;
-  if (chatQ.isLoading) return <div className="p-6"><Spinner /></div>;
+  if (chatQ.isLoading) return <Spinner page />;
   if (!chat) return <div className="p-6 text-danger text-sm">{(chatQ.error as Error)?.message ?? "Chat not found"}</div>;
 
   const running = chat.status === "running" || chat.status === "waiting";
@@ -267,7 +270,12 @@ export default function Chat() {
                   icon={<Rocket className="size-4" />}
                   onClick={async () => {
                     setMenu(false);
-                    if (confirm("Deploy this project now?")) await run(() => api.post(`/api/projects/${chat.project_id}/deploys`), "Deploy started");
+                    const ok = await ask({
+                      title: "Deploy project",
+                      message: `Deploy ${chat.project?.name ?? "this project"} now?`,
+                      confirmLabel: "Deploy",
+                    });
+                    if (ok) await run(() => api.post(`/api/projects/${chat.project_id}/deploys`), "Deploy started");
                   }}
                 >
                   Deploy project
@@ -278,8 +286,13 @@ export default function Chat() {
                   icon={<GitMerge className="size-4" />}
                   onClick={async () => {
                     setMenu(false);
-                    const remove = confirm("Merge this chat's branch into the project. Also remove the worktree and archive the chat? (Cancel = merge only)");
-                    await run(() => api.post(`/api/chats/${id}/merge`, { remove }), "Merged");
+                    const r = await askWithOption({
+                      title: "Merge branch",
+                      message: `Merge ${chat.worktree_branch} into the project?`,
+                      confirmLabel: "Merge",
+                      checkbox: { label: "Also remove the worktree and archive the chat" },
+                    });
+                    if (r.ok) await run(() => api.post(`/api/chats/${id}/merge`, { remove: r.checked }), "Merged");
                   }}
                 >
                   Merge branch into project
@@ -302,7 +315,7 @@ export default function Chat() {
                 icon={<Trash2 className="size-4" />}
                 onClick={async () => {
                   setMenu(false);
-                  if (!confirm("Delete this chat and its history?")) return;
+                  if (!(await ask({ title: "Delete chat", message: "Delete this chat and its history?", confirmLabel: "Delete", danger: true }))) return;
                   const r = await run(() => api.del(`/api/chats/${id}`));
                   if (r) nav(`/projects/${chat.project_id}`);
                 }}
@@ -313,6 +326,8 @@ export default function Chat() {
           )}
         </div>
       </div>
+
+      {chat.project?.deployable && <DeployBanner projectId={chat.project_id} enabled />}
 
       <div
         ref={scroller}

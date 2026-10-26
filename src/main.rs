@@ -164,6 +164,7 @@ async fn serve(cfg: Config) -> Result<()> {
     telegram::spawn(st.clone());
     sysmon::spawn(st.clone());
     updater::spawn(st.clone());
+    agents::codex::spawn_usage_refresh(st.clone());
 
     let app = api::router()
         .fallback(web::serve)

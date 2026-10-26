@@ -109,7 +109,7 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
   );
 }
 
-export function Card({ className, children, ...rest }: React.HTMLAttributes<HTMLDivElement>) {
+export function Card({ className, children, ...rest }: React.ComponentProps<"div">) {
   return (
     <div className={cx("rounded-xl border border-border bg-panel", className)} {...rest}>
       {children}
@@ -128,8 +128,16 @@ export function Badge({ children, tone = "neutral", className }: { children: Rea
   return <span className={cx("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium", t, className)}>{children}</span>;
 }
 
-export function Spinner({ className }: { className?: string }) {
-  return <Loader2 className={cx("size-4 animate-spin text-muted", className)} />;
+/** Loading indicator, centered both ways in the space it is given.
+ *  `page` reserves a taller area for whole-page loads; `inline` drops the wrapper. */
+export function Spinner({ className, page, inline }: { className?: string; page?: boolean; inline?: boolean }) {
+  const icon = <Loader2 className={cx("animate-spin text-muted", page ? "size-6" : "size-5", className)} />;
+  if (inline) return icon;
+  return (
+    <div role="status" aria-label="Loading" className={cx("flex flex-1 w-full h-full items-center justify-center", page ? "min-h-[60dvh]" : "min-h-32 py-6")}>
+      {icon}
+    </div>
+  );
 }
 
 export function Empty({ icon, title, children }: { icon?: React.ReactNode; title: string; children?: React.ReactNode }) {
@@ -167,6 +175,9 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 sm:p-4" onMouseDown={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         className={cx(
           "bg-panel w-full rounded-t-2xl sm:rounded-2xl border border-border shadow-2xl flex flex-col max-h-[92dvh]",
           wide ? "sm:max-w-3xl" : "sm:max-w-lg",
@@ -216,6 +227,81 @@ export function PageHeader({ title, subtitle, actions }: { title: React.ReactNod
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>
   );
+}
+
+// ---------- confirm dialog ----------
+
+export type ConfirmOptions = {
+  title: string;
+  message?: React.ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  /** Optional checkbox shown above the buttons; its state is returned. */
+  checkbox?: { label: string; defaultChecked?: boolean };
+};
+type ConfirmResult = { ok: boolean; checked: boolean };
+type ConfirmState = ConfirmOptions & { resolve: (r: ConfirmResult) => void };
+const ConfirmCtx = createContext<(o: ConfirmOptions) => Promise<ConfirmResult>>(async () => ({ ok: false, checked: false }));
+
+export function ConfirmProvider({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<ConfirmState | null>(null);
+  const [checked, setChecked] = useState(false);
+  const ask = useCallback(
+    (o: ConfirmOptions) =>
+      new Promise<ConfirmResult>((resolve) => {
+        setChecked(!!o.checkbox?.defaultChecked);
+        setState({ ...o, resolve });
+      }),
+    [],
+  );
+  const close = useCallback(
+    (ok: boolean) => {
+      state?.resolve({ ok, checked });
+      setState(null);
+    },
+    [state, checked],
+  );
+  const cancel = useCallback(() => close(false), [close]);
+  return (
+    <ConfirmCtx.Provider value={ask}>
+      {children}
+      <Modal
+        open={!!state}
+        onClose={cancel}
+        title={state?.title ?? ""}
+        footer={
+          <>
+            <Button variant="ghost" onClick={cancel}>
+              {state?.cancelLabel ?? "Cancel"}
+            </Button>
+            <Button variant={state?.danger ? "danger" : "primary"} autoFocus onClick={() => close(true)}>
+              {state?.confirmLabel ?? "Confirm"}
+            </Button>
+          </>
+        }
+      >
+        {state?.message && <div className="text-sm text-muted whitespace-pre-line">{state.message}</div>}
+        {state?.checkbox && (
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input type="checkbox" className="size-4 accent-accent" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
+            {state.checkbox.label}
+          </label>
+        )}
+      </Modal>
+    </ConfirmCtx.Provider>
+  );
+}
+
+/** Ask for confirmation in a modal. Resolves to true when confirmed. */
+export function useConfirm() {
+  const ask = useContext(ConfirmCtx);
+  return useCallback((o: ConfirmOptions) => ask(o).then((r) => r.ok), [ask]);
+}
+
+/** Like useConfirm, but also returns the checkbox state. */
+export function useConfirmWithOption() {
+  return useContext(ConfirmCtx);
 }
 
 // ---------- toasts ----------

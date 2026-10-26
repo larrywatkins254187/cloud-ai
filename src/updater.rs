@@ -248,15 +248,47 @@ pub async fn run_updates(st: &St, include_app: bool) -> Result<Vec<String>> {
     let level = if report.iter().any(|r| r.starts_with("ERROR")) { "error" } else { "info" };
     st.notice(level, format!("Updates: {}", report.join(" · ")));
     if restart {
-        let st2 = st.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            crate::shutdown(&st2).await;
-            // systemd (Restart=always) starts the new binary.
-            std::process::exit(0);
-        });
+        restart_soon(st);
     }
     Ok(report)
+}
+
+/// Update just one thing now: "claude", "codex" or "app" (cloud-ai itself,
+/// regardless of the auto-update switch). Only when idle.
+pub async fn run_update_one(st: &St, target: &str) -> Result<Vec<String>> {
+    let _guard = st.updater.running.try_lock().map_err(|_| anyhow!("an update is already running"))?;
+    if !idle(st) {
+        bail!("something is running; updates wait until all prompts and deploys are finished");
+    }
+    let msg = match target {
+        "claude" | "codex" => {
+            let msg = update_cli(st, target).await?;
+            if msg.contains('→') {
+                crate::catalog::refresh(st).await;
+            }
+            msg
+        }
+        "app" => match update_app(st).await? {
+            Some(tag) => {
+                restart_soon(st);
+                format!("cloud-ai updated to {tag}; restarting")
+            }
+            None => format!("cloud-ai {} is up to date", env!("CARGO_PKG_VERSION")),
+        },
+        _ => bail!("unknown update target {target}"),
+    };
+    st.notice("info", format!("Updates: {msg}"));
+    Ok(vec![msg])
+}
+
+fn restart_soon(st: &St) {
+    let st2 = st.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        crate::shutdown(&st2).await;
+        // systemd (Restart=always) starts the new binary.
+        std::process::exit(0);
+    });
 }
 
 pub fn spawn(st: St) {
@@ -296,9 +328,31 @@ async fn claude_auth(st: &St) -> Value {
 
 async fn codex_auth(st: &St) -> Value {
     match sh(&format!("{} login status", crate::util::shell_quote(&bin(st, "codex"))), Duration::from_secs(30)).await {
-        Ok((ok, out)) => json!({"loggedIn": ok && !out.to_lowercase().contains("not logged"), "detail": out.trim()}),
+        Ok((ok, out)) => {
+            let logged_in = ok && !out.to_lowercase().contains("not logged");
+            json!({"loggedIn": logged_in, "detail": out.trim(), "email": if logged_in { codex_email() } else { None }})
+        }
         Err(e) => json!({"loggedIn": false, "detail": e.to_string()}),
     }
+}
+
+/// Email of the ChatGPT account Codex is logged in with, read from the
+/// id_token in Codex's auth.json.
+fn codex_email() -> Option<String> {
+    let home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| std::path::Path::new(&h).join(".codex")))
+        .ok()?;
+    let auth: Value = serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).ok()?).ok()?;
+    jwt_email(auth["tokens"]["id_token"].as_str()?)
+}
+
+fn jwt_email(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let v: Value = serde_json::from_slice(&bytes).ok()?;
+    v["email"].as_str().map(String::from)
 }
 
 async fn status(State(st): State<St>, AdminUser(_): AdminUser) -> Json<Value> {
@@ -318,19 +372,46 @@ async fn status(State(st): State<St>, AdminUser(_): AdminUser) -> Json<Value> {
     }))
 }
 
+/// Look up the latest versions now and compare them with what is installed.
 async fn check(State(st): State<St>, AdminUser(_): AdminUser) -> Json<Value> {
-    let (a, b, c) = tokio::join!(latest_version(&st, "claude"), latest_version(&st, "codex"), latest_release(&st));
-    Json(json!({"claude": a, "codex": b, "app": c.ok().map(|r| r["tag_name"].clone())}))
+    let (a, b, c, ia, ib) = tokio::join!(
+        latest_version(&st, "claude"),
+        latest_version(&st, "codex"),
+        latest_release(&st),
+        installed_version(&st, "claude"),
+        installed_version(&st, "codex")
+    );
+    let entry = |installed: Option<String>, latest: Option<String>, err: Option<String>| {
+        let available = matches!((&installed, &latest), (Some(i), Some(l)) if newer(l, i));
+        json!({"installed": installed, "latest": latest, "update_available": available, "error": err})
+    };
+    let app_installed = env!("CARGO_PKG_VERSION").to_string();
+    let (app_latest, app_err) = match c {
+        Ok(r) => (r["tag_name"].as_str().map(|t| t.trim_start_matches('v').to_string()), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    Json(json!({
+        "claude": entry(ia, a, None),
+        "codex": entry(ib, b, None),
+        "app": entry(Some(app_installed), app_latest, app_err),
+        "idle": idle(&st),
+    }))
 }
 
 #[derive(Deserialize)]
 struct UpdateBody {
     #[serde(default)]
     app: bool,
+    /// Update only this one: "claude", "codex" or "app".
+    only: Option<String>,
 }
 
 async fn update(State(st): State<St>, AdminUser(_): AdminUser, Json(b): Json<UpdateBody>) -> ApiResult<Json<Value>> {
-    let report = run_updates(&st, b.app).await.map_err(|e| ApiError::bad(format!("{e:#}")))?;
+    let report = match b.only.as_deref() {
+        Some(t) => run_update_one(&st, t).await,
+        None => run_updates(&st, b.app).await,
+    }
+    .map_err(|e| ApiError::bad(format!("{e:#}")))?;
     Ok(Json(json!({"report": report})))
 }
 
@@ -400,5 +481,13 @@ mod tests {
         assert_eq!(parse_version("codex-cli 0.164.0").as_deref(), Some("0.164.0"));
         assert!(newer("2.1.311", "2.1.310"));
         assert!(!newer("2.1.310", "2.1.310"));
+    }
+
+    #[test]
+    fn email_from_id_token() {
+        // header.payload.signature with payload {"email":"a@b.co"}
+        let t = "eyJhbGciOiJub25lIn0.eyJlbWFpbCI6ImFAYi5jbyJ9.sig";
+        assert_eq!(jwt_email(t).as_deref(), Some("a@b.co"));
+        assert_eq!(jwt_email("bad"), None);
     }
 }

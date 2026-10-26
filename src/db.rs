@@ -199,6 +199,8 @@ CREATE TABLE events(
   created_at TEXT NOT NULL
 );
 "#,
+    // Telegram forum topic a deploy reports into (NULL = the group's General topic).
+    "ALTER TABLE deploys ADD COLUMN tg_thread_id INTEGER;",
 ];
 
 impl Db {
