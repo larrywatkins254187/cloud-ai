@@ -1,6 +1,6 @@
 //! Claude Code driven through its stream-json stdio protocol (the same one the
 //! Agent SDK uses): one long-lived `claude -p` process per active chat.
-use super::{claude_permission_mode, prompt_with_attachments, question, system_prompt, Attachment, TurnOutcome};
+use super::{claude_permission_mode, prompt_with_attachments, question, system_prompt, Attachment, ModelUsage, TurnOutcome};
 use crate::events::Event;
 use crate::runner;
 use crate::settings;
@@ -36,10 +36,28 @@ pub struct ClaudeSession {
     alive: AtomicBool,
     last_used: Mutex<Instant>,
     total_cost: Mutex<f64>,
+    /// Last cumulative `modelUsage` per model, to get each turn's share.
+    model_usage: Mutex<HashMap<String, ModelUsage>>,
+    /// Model named in the latest assistant message (fallback when `modelUsage` is missing).
+    last_model: Mutex<String>,
     stderr: Mutex<String>,
     ctrl_seq: AtomicU64,
     /// Sub-agent tool_use id ↔ Claude task id (used by `stop_task`).
     tasks: Mutex<Tasks>,
+    /// PID of the Claude process (to find the processes of its background tasks).
+    pid: Option<u32>,
+    /// Background Bash / Monitor calls waiting for their task id: tool_use id → (tool, command, description).
+    bg_calls: Mutex<HashMap<String, (String, String, String)>>,
+    /// Background shells and monitors of this process: task id → info.
+    bg: Mutex<HashMap<String, BgTask>>,
+}
+
+/// A background shell command or monitor started by Claude Code.
+#[derive(Clone, Debug)]
+pub struct BgTask {
+    pub command: String,
+    pub running: bool,
+    pub output_file: Option<String>,
 }
 
 #[derive(Default)]
@@ -64,6 +82,10 @@ fn agent_id_in(output: &str) -> Option<&str> {
     let id: &str = &output[i..];
     let end = id.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_')).unwrap_or(id.len());
     (end > 0).then(|| &id[..end])
+}
+
+fn s_id(b: &Value) -> String {
+    b["id"].as_str().unwrap_or("").to_string()
 }
 
 /// Claude task status → the status shown in the panel.
@@ -93,9 +115,68 @@ impl ClaudeSession {
 
     pub fn kill(&self) {
         self.alive.store(false, Ordering::SeqCst);
+        // Background commands run in their own process groups and would outlive Claude.
+        for (task_id, t) in self.bg.lock().unwrap().iter().filter(|(_, t)| t.running) {
+            let out = crate::background::output_path(task_id, t.output_file.as_deref());
+            crate::background::kill_task(self.pid, &t.command, out.as_deref());
+        }
         if let Some(mut c) = self.child.lock().unwrap().take() {
             let _ = c.start_kill();
         }
+    }
+
+    /// The process ended: its background tasks are gone too (kill any survivors).
+    fn end_background(&self, st: &St) {
+        let running: Vec<(String, BgTask)> = self.bg.lock().unwrap().iter().filter(|(_, t)| t.running).map(|(k, t)| (k.clone(), t.clone())).collect();
+        for (task_id, t) in running {
+            let out = crate::background::output_path(&task_id, t.output_file.as_deref());
+            crate::background::kill_task(self.pid, &t.command, out.as_deref());
+            self.bg_finished(st, &task_id, "stopped", &json!("Stopped because the Claude Code process ended"), None);
+        }
+    }
+
+    /// True while a background shell or monitor of this process is running.
+    pub fn has_background(&self) -> bool {
+        self.bg.lock().unwrap().values().any(|t| t.running)
+    }
+
+    pub fn running_background(&self) -> Vec<String> {
+        self.bg.lock().unwrap().iter().filter(|(_, t)| t.running).map(|(k, _)| k.clone()).collect()
+    }
+
+    pub fn background_task(&self, task_id: &str) -> Option<BgTask> {
+        self.bg.lock().unwrap().get(task_id).cloned()
+    }
+
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// Ask Claude Code to stop a task by its id (sub-agent, shell or monitor).
+    pub fn stop_task_id(&self, task_id: &str) {
+        let id = format!("stop-{}", self.ctrl_seq.fetch_add(1, Ordering::SeqCst));
+        self.send(json!({"type":"control_request","request_id": id, "request": {"subtype":"stop_task","task_id": task_id}}));
+    }
+
+    /// Record a background task's end once and tell the panel.
+    fn bg_finished(&self, st: &St, task_id: &str, status: &str, summary: &Value, output_file: Option<&str>) {
+        let mut data = json!({"task_id": task_id, "status": status});
+        {
+            let mut bg = self.bg.lock().unwrap();
+            let Some(t) = bg.get_mut(task_id) else { return };
+            if let Some(f) = output_file.filter(|f| !f.is_empty()) {
+                t.output_file = Some(f.to_string());
+                data["output_file"] = json!(f);
+            }
+            if !t.running && summary.is_null() && output_file.is_none() {
+                return;
+            }
+            t.running = false;
+        }
+        if !summary.is_null() {
+            data["summary"] = summary.clone();
+        }
+        self.store(st, "shell", data);
     }
 
     /// Stop one sub-agent. Returns false when its task id is unknown (older CLI or
@@ -180,6 +261,7 @@ impl ClaudeSession {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| format!("starting `{bin}` (is Claude Code installed? set its path in Settings)"))?;
+        let child_pid = child.id();
         let mut stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -194,8 +276,13 @@ impl ClaudeSession {
             alive: AtomicBool::new(true),
             last_used: Mutex::new(Instant::now()),
             total_cost: Mutex::new(0.0),
+            model_usage: Mutex::new(HashMap::new()),
+            last_model: Mutex::new(chat.model.clone()),
             stderr: Mutex::new(String::new()),
             tasks: Mutex::new(Tasks::default()),
+            pid: child_pid,
+            bg_calls: Mutex::new(HashMap::new()),
+            bg: Mutex::new(HashMap::new()),
             ctrl_seq: AtomicU64::new(1),
         });
 
@@ -236,6 +323,7 @@ impl ClaudeSession {
                     }
                 }
                 s.alive.store(false, Ordering::SeqCst);
+                s.end_background(&st);
                 let err = s.stderr.lock().unwrap().clone();
                 let turn = s.turn.lock().unwrap().take();
                 if let Some(mut t) = turn {
@@ -299,6 +387,38 @@ impl ClaudeSession {
         self.turn.lock().unwrap().as_ref().map(|t| t.run_id)
     }
 
+    /// This turn's tokens per model. `modelUsage` is cumulative for the process,
+    /// so each turn is the difference from the previous snapshot; `usage` is the
+    /// fallback (main model only) for CLIs that do not report `modelUsage`.
+    fn turn_usage(&self, v: &Value, cost: f64) -> Vec<ModelUsage> {
+        if let Some(per_model) = v["modelUsage"].as_object().filter(|m| !m.is_empty()) {
+            let mut prev = self.model_usage.lock().unwrap();
+            let mut out = Vec::new();
+            for (model, m) in per_model {
+                let now = ModelUsage::from_claude(model, m);
+                let delta = now.minus(prev.get(model));
+                prev.insert(model.clone(), now);
+                if !delta.is_empty() {
+                    out.push(delta);
+                }
+            }
+            return out;
+        }
+        let u = &v["usage"];
+        let n = |k: &str| u[k].as_i64().unwrap_or(0);
+        let mu = ModelUsage {
+            model: self.last_model.lock().unwrap().clone(),
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_input_tokens"),
+            cache_write: n("cache_creation_input_tokens"),
+            reasoning: u["output_tokens_details"]["thinking_tokens"].as_i64().unwrap_or(0),
+            web_search: u["server_tool_use"]["web_search_requests"].as_i64().unwrap_or(0),
+            cost_usd: Some(cost),
+        };
+        if mu.is_empty() { vec![] } else { vec![mu] }
+    }
+
     fn store(&self, st: &St, kind: &str, data: Value) {
         if let Ok(m) = insert_message(&st.db, self.chat_id, self.current_run(), kind, &data) {
             st.emit_project(self.project_id, Event::Message { message: m });
@@ -327,6 +447,30 @@ impl ClaudeSession {
                     }
                 }
                 "compact_boundary" => self.store(st, "system", json!({"text": "Conversation compacted to free context"})),
+                "task_started" if v["task_type"] == "local_bash" => {
+                    let task_id = v["task_id"].as_str().unwrap_or("");
+                    let r = v["tool_use_id"].as_str().unwrap_or("");
+                    let (tool, command, description) = self.bg_calls.lock().unwrap().remove(r).unwrap_or_default();
+                    self.bg.lock().unwrap().insert(task_id.to_string(), BgTask { command: command.clone(), running: true, output_file: None });
+                    self.store(
+                        st,
+                        "shell",
+                        json!({
+                            "task_id": task_id, "ref": r, "status": "running",
+                            "kind": if tool == "Monitor" { "monitor" } else { "shell" },
+                            "command": command,
+                            "description": v["description"].as_str().filter(|d| !d.is_empty()).map(String::from).unwrap_or(description),
+                        }),
+                    );
+                }
+                "task_updated" => {
+                    let task_id = v["task_id"].as_str().unwrap_or("");
+                    if let Some(s) = v["patch"]["status"].as_str() {
+                        if task_status(s) != "running" && self.bg.lock().unwrap().contains_key(task_id) {
+                            self.bg_finished(st, task_id, task_status(s), &Value::Null, None);
+                        }
+                    }
+                }
                 "task_started" => {
                     let task_id = v["task_id"].as_str().unwrap_or("");
                     let r = v["tool_use_id"].as_str().unwrap_or("");
@@ -346,6 +490,10 @@ impl ClaudeSession {
                         "tokens": u["total_tokens"], "tool_uses": u["tool_uses"], "duration_ms": u["duration_ms"],
                     });
                     self.delta(st, "agent", &p.to_string());
+                }
+                "task_notification" if self.bg.lock().unwrap().contains_key(v["task_id"].as_str().unwrap_or("")) => {
+                    let task_id = v["task_id"].as_str().unwrap_or("");
+                    self.bg_finished(st, task_id, task_status(v["status"].as_str().unwrap_or("")), &v["summary"], v["output_file"].as_str());
                 }
                 "task_notification" => {
                     let task_id = v["task_id"].as_str().unwrap_or("");
@@ -382,6 +530,11 @@ impl ClaudeSession {
                 }
             }
             "assistant" => {
+                if v["parent_tool_use_id"].is_null() {
+                    if let Some(m) = v["message"]["model"].as_str().filter(|m| !m.is_empty() && *m != "<synthetic>") {
+                        *self.last_model.lock().unwrap() = m.to_string();
+                    }
+                }
                 let blocks = v["message"]["content"].as_array().cloned().unwrap_or_default();
                 for b in blocks {
                     match b["type"].as_str().unwrap_or("") {
@@ -403,11 +556,14 @@ impl ClaudeSession {
                                 self.store(st, "thinking", json!({"text": text, "parent": parent}));
                             }
                         }
-                        "tool_use" => self.store(
-                            st,
-                            "tool_use",
-                            json!({"id": b["id"], "name": b["name"], "input": b["input"], "parent": parent}),
-                        ),
+                        "tool_use" => {
+                            let name = b["name"].as_str().unwrap_or("");
+                            if name == "Monitor" || (name == "Bash" && b["input"]["run_in_background"] == true) {
+                                let s = |k: &str| b["input"][k].as_str().unwrap_or("").to_string();
+                                self.bg_calls.lock().unwrap().insert(s_id(&b), (name.to_string(), s("command"), s("description")));
+                            }
+                            self.store(st, "tool_use", json!({"id": b["id"], "name": b["name"], "input": b["input"], "parent": parent}))
+                        }
                         _ => {}
                     }
                 }
@@ -457,6 +613,13 @@ impl ClaudeSession {
                 }
             }
             "result" => {
+                if self.turn.lock().unwrap().is_none() {
+                    // A turn Claude started by itself (e.g. after a background task finished).
+                    // Keep the cumulative counters as they are, so the next prompt's cost and
+                    // usage include this turn instead of losing it.
+                    *self.last_used.lock().unwrap() = Instant::now();
+                    return;
+                }
                 let total = v["total_cost_usd"].as_f64().unwrap_or(0.0);
                 let cost = {
                     let mut prev = self.total_cost.lock().unwrap();
@@ -469,6 +632,7 @@ impl ClaudeSession {
                     + u["cache_creation_input_tokens"].as_i64().unwrap_or(0)
                     + u["cache_read_input_tokens"].as_i64().unwrap_or(0);
                 let output = u["output_tokens"].as_i64().unwrap_or(0);
+                let usage = self.turn_usage(&v, cost);
                 let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"] != "success";
                 if is_error && v["num_turns"].as_i64() == Some(0) && v["result"].as_str().unwrap_or("").is_empty() {
                     // Failed before doing anything (e.g. the session to resume is gone): the reason
@@ -508,6 +672,7 @@ impl ClaudeSession {
                         cost_usd: Some(cost),
                         input_tokens: input,
                         output_tokens: output,
+                        usage,
                     };
                     if let Some(done) = t.done.take() {
                         let _ = done.send(outcome);

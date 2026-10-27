@@ -18,6 +18,7 @@ const Project = lazy(() => import("./pages/Project"));
 const Projects = lazy(() => import("./pages/Projects"));
 const Schedules = lazy(() => import("./pages/Schedules"));
 const Terminal = lazy(() => import("./pages/Terminal"));
+const Usage = lazy(() => import("./pages/Usage"));
 const Cli = lazy(() => import("./pages/admin/Cli"));
 const Events = lazy(() => import("./pages/admin/Events"));
 const Extensions = lazy(() => import("./pages/admin/Extensions"));
@@ -84,6 +85,7 @@ function LoggedIn() {
         <Route path="projects/:id" element={<Project />} />
         <Route path="chats/:id" element={<Chat />} />
         <Route path="schedules" element={<Schedules />} />
+        <Route path="usage" element={<Usage />} />
         <Route path="terminal" element={<Terminal />} />
         <Route path="account" element={<Account />} />
         <Route path="admin/users" element={<Users />} />

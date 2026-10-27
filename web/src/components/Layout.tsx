@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Bot,
   CalendarClock,
+  ChartColumn,
   FolderGit2,
   LayoutDashboard,
   LogOut,
@@ -29,6 +30,7 @@ const main = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/projects", label: "Projects", icon: FolderGit2 },
   { to: "/schedules", label: "Schedules", icon: CalendarClock },
+  { to: "/usage", label: "Usage", icon: ChartColumn },
   { to: "/extensions", label: "Skills & plugins", icon: Puzzle },
 ];
 

@@ -61,14 +61,13 @@ export default function Terminal() {
           </div>
         ))}
         <div className="flex-1" />
-        <Select className="h-8 w-44 text-xs shrink-0" value={cwd} onChange={(e) => setCwd(e.target.value)}>
-          <option value="">Home folder</option>
-          {projects.data?.map((p) => (
-            <option key={p.id} value={p.path}>
-              {p.name}
-            </option>
-          ))}
-        </Select>
+        <Select
+          className="h-8 w-44 text-xs shrink-0"
+          value={cwd}
+          onChange={setCwd}
+          aria-label="Folder"
+          options={[{ value: "", label: "Home folder" }, ...(projects.data ?? []).map((p) => ({ value: p.path, label: p.name, hint: p.path }))]}
+        />
         <Button size="sm" variant="primary" icon={<Plus className="size-4" />} onClick={open} className="shrink-0">
           New
         </Button>

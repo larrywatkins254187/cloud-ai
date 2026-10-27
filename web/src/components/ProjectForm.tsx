@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { Project, Server, User } from "../lib/types";
-import { Field, Input, Select, Textarea, Toggle } from "./ui";
+import { Field, Input, NumberInput, Select, Textarea, Toggle } from "./ui";
 
 export type ProjectDraft = Partial<Project> & { users?: number[] };
 
@@ -31,10 +31,11 @@ export function ProjectFields({ v, set, showUsers = true }: { v: ProjectDraft; s
             <Input value={v.dev_command ?? ""} onChange={(e) => up({ dev_command: e.target.value })} placeholder="npm run dev -- -p 4001" />
           </Field>
           <Field label="Port">
-            <Input
-              type="number"
+            <NumberInput
               value={v.dev_port ?? ""}
-              onChange={(e) => up({ dev_port: e.target.value ? Number(e.target.value) : null })}
+              onChange={(x) => up({ dev_port: x ? Number(x) : null })}
+              min={1}
+              max={65535}
               placeholder="4001"
             />
           </Field>
@@ -44,32 +45,39 @@ export function ProjectFields({ v, set, showUsers = true }: { v: ProjectDraft; s
       <div className="space-y-3">
         <div className="text-sm font-semibold">Deploy</div>
         <Field label="Where does it run?">
-          <Select value={v.deploy_target ?? "none"} onChange={(e) => up({ deploy_target: e.target.value as any })}>
-            <option value="none">No deploy</option>
-            <option value="local">On this server</option>
-            <option value="remote">On another server (SSH)</option>
-          </Select>
+          <Select
+            value={v.deploy_target ?? "none"}
+            onChange={(t) => up({ deploy_target: t })}
+            options={[
+              { value: "none" as const, label: "No deploy" },
+              { value: "local" as const, label: "On this server" },
+              { value: "remote" as const, label: "On another server (SSH)" },
+            ]}
+          />
         </Field>
         {v.deploy_target === "remote" && (
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Server" hint={servers.data === undefined ? (servers.isError ? "Couldn't load the server list — check your connection" : undefined) : servers.data.length ? undefined : "Add a server under Admin → Servers first"}>
-              <Select value={v.server_id ?? ""} onChange={(e) => up({ server_id: e.target.value ? Number(e.target.value) : null })}>
-                <option value="">Choose…</option>
-                {servers.data?.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.username}@{s.host})
-                  </option>
-                ))}
-              </Select>
+              <Select
+                value={v.server_id ?? null}
+                onChange={(id) => up({ server_id: id })}
+                placeholder="Choose a server…"
+                emptyText="No servers found"
+                options={(servers.data ?? []).map((s) => ({ value: s.id, label: s.name, hint: `${s.username}@${s.host}:${s.port}` }))}
+              />
             </Field>
             <Field label="Path on that server">
               <Input value={v.remote_path ?? ""} onChange={(e) => up({ remote_path: e.target.value })} placeholder="/var/www/my-app" />
             </Field>
             <Field label="How to ship the code" className="sm:col-span-2">
-              <Select value={v.deploy_method ?? "git"} onChange={(e) => up({ deploy_method: e.target.value as any })}>
-                <option value="git">git push here, then git pull on the server</option>
-                <option value="rsync">Copy files with rsync</option>
-              </Select>
+              <Select
+                value={v.deploy_method ?? "git"}
+                onChange={(m) => up({ deploy_method: m })}
+                options={[
+                  { value: "git" as const, label: "git push here, then git pull on the server" },
+                  { value: "rsync" as const, label: "Copy files with rsync" },
+                ]}
+              />
             </Field>
             {v.deploy_method === "rsync" && (
               <Field label="Exclude from rsync (one per line)" className="sm:col-span-2" hint="Excluded files are never deleted on the server">

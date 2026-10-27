@@ -24,7 +24,18 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("app_update_repo", "larrywatkins254187/cloud-ai"),
     ("browser_path", ""),
     ("browser_idle_minutes", "10"),
+    ("usage_prices", DEFAULT_PRICES),
 ];
+
+/// Estimated prices in USD per 1M tokens, used on the Usage page when a CLI does not
+/// report a cost (Codex). The first row whose pattern matches the model wins; `*` is a wildcard.
+pub const DEFAULT_PRICES: &str = r#"[
+  {"model":"*-mini*","input":0.25,"cache_read":0.025,"cache_write":0,"output":2},
+  {"model":"gpt-5.2*","input":1.75,"cache_read":0.175,"cache_write":0,"output":14},
+  {"model":"gpt-5.1*","input":1.25,"cache_read":0.125,"cache_write":0,"output":10},
+  {"model":"gpt-5*","input":1.25,"cache_read":0.125,"cache_write":0,"output":10},
+  {"model":"*","input":1.75,"cache_read":0.175,"cache_write":0,"output":14}
+]"#;
 
 /// Settings never sent back to the browser in clear text.
 pub const SECRET_KEYS: &[&str] = &["telegram_token"];
@@ -85,6 +96,9 @@ pub fn update_from_ui(db: &Db, v: &Value) -> anyhow::Result<()> {
         };
         if SECRET_KEYS.contains(&k.as_str()) && s == "********" {
             continue;
+        }
+        if k == "usage_prices" && !s.trim().is_empty() {
+            crate::api::usage::parse_prices(&s).map_err(|e| anyhow::anyhow!("price table: {e}"))?;
         }
         if k == "timezone" && s.parse::<chrono_tz::Tz>().is_err() {
             anyhow::bail!("unknown timezone {s}");

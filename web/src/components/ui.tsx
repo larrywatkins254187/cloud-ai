@@ -1,5 +1,9 @@
 import { Loader2, X } from "lucide-react";
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { Checkbox } from "./controls";
+
+export { Checkbox, DatePicker, DateRangePicker, DateTimePicker, NumberInput, Select, TimePicker } from "./controls";
+export type { Option } from "./controls";
 
 export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
@@ -68,14 +72,6 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
 export const Textarea = React.forwardRef<HTMLTextAreaElement, React.TextareaHTMLAttributes<HTMLTextAreaElement>>(
   ({ className, ...rest }, ref) => <textarea ref={ref} className={cx(fieldCls, width(className), "py-2 min-h-20", className)} {...rest} />,
 );
-
-export function Select({ className, children, ...rest }: React.SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select className={cx(fieldCls, width(className), "h-10 pr-8 appearance-auto", className)} {...rest}>
-      {children}
-    </select>
-  );
-}
 
 export function Field({ label, hint, children, className }: { label: string; hint?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
@@ -283,10 +279,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
       >
         {state?.message && <div className="text-sm text-muted whitespace-pre-line">{state.message}</div>}
         {state?.checkbox && (
-          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
-            <input type="checkbox" className="size-4 accent-accent" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
-            {state.checkbox.label}
-          </label>
+          <Checkbox checked={checked} onChange={setChecked} label={state.checkbox.label} />
         )}
       </Modal>
     </ConfirmCtx.Provider>

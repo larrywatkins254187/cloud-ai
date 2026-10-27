@@ -99,7 +99,7 @@ export interface Msg {
   id: number;
   chat_id: number;
   run_id: number | null;
-  kind: "user" | "assistant" | "thinking" | "tool_use" | "tool_result" | "error" | "system" | "plan" | "todo" | "agent";
+  kind: "user" | "assistant" | "thinking" | "tool_use" | "tool_result" | "error" | "system" | "plan" | "todo" | "shell" | "agent";
   data: any;
   created_at: string;
 }

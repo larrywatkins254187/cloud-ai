@@ -8,6 +8,8 @@ It is one small Rust binary (about 15–30 MB of RAM) with an embedded React PWA
 - **Chats with Claude Code or Codex** on any project folder. You can pick the model and reasoning effort; the list is read from the installed CLIs and refreshed automatically. Replies, thinking, tool calls and diffs stream live. You can attach images and files, stop a run, or queue follow-ups. Each chat can optionally run in its own git worktree with a one-click merge.
 - **Sub-agents**: when Claude Code or Codex hands work to sub-agents, a side panel (a drawer on phones) lists each one with its live status, duration, tool count and the step it is on. Open one to see the task it was given and its own tool calls, or stop just that agent. When the CLI can't stop a single agent, the running prompt is stopped instead, and the panel tells you which happened.
 - **Permission modes** per chat: full access (the default), auto-edit, ask before changes, plan only. Approvals and the agents' questions show up as cards in the panel *and* as Telegram messages with buttons. Answering in one place updates the other.
+- **Background commands and monitors**: when Claude Code runs a shell command in the background or starts a Monitor, it appears in the chat's side panel (*Background* tab, next to *Sub-agents*) with its command, live output and status. **Stop** asks Claude Code to end it; **Kill** ends its processes right away. Idle chat processes are not stopped while a background command still runs.
+- **Usage page**: tokens and cost for today, this week (Saturday to Friday), this month or any date range, in the panel's timezone. It shows input, output, cache read, cache write, reasoning tokens, web searches, runs and cost, with a daily chart and breakdowns by project, user, model, tool, chat, schedule and source, plus CSV export. Admins see the whole system and a *Per user* tab; users see their own usage. Claude Code reports its own cost; Codex cost is estimated from an editable price table in **Admin → Settings → Usage prices**.
 - **Schedules**: run prompts once, daily, on chosen weekdays, or on a cron expression (with a builder and a preview of the next runs). Times are in Asia/Tehran by default. A schedule can be a chain of prompts, can start a new chat each time or keep using one, and can deploy when it finishes. If a project is busy, scheduled prompts wait in the queue.
 - **Queue and resource guard**: a limit of parallel sessions per tool (default 3 + 3), a minimum free RAM before a prompt starts, and idle agent processes stopped automatically. Conversations resume transparently.
 - **Projects**: add an existing folder, create a new one, clone a git repo, or import from another server over SSH. Admins assign projects to users. Includes a file browser/editor and a git view (status, diff, commit, push, pull, branches, history).
@@ -20,7 +22,7 @@ It is one small Rust binary (about 15–30 MB of RAM) with an embedded React PWA
 - **Users and security**: admin and user roles, **mandatory TOTP 2FA** for everyone, login rate limiting, and encrypted secrets. The first admin needs a one-time setup token.
 - **Maintenance**: Claude Code and Codex are updated every day at 05:00, but only when nothing is running. A failed update is rolled back. The panel updates itself from GitHub releases. You can log the CLIs in from the panel (Codex device code, or a web terminal for `claude auth login`), and there is a web terminal for anything else. In the terminal, **Ctrl+Shift+V** pastes and **Ctrl+Shift+C** copies, links are clickable, and on phones there are Paste and Copy buttons.
 - **Skills, plugins, MCP servers and CLAUDE.md / AGENTS.md** for both CLIs, either global or per project.
-- Dark and light theme, installable as a PWA, works on mobile. Pages show a loading placeholder until their data arrives, and an error with Retry if it can't load (they also retry on their own when the connection comes back), never an empty list by mistake.
+- Dark and light theme with themed controls everywhere (searchable dropdowns, date, time and range pickers, number steppers, checkboxes), installable as a PWA, works on mobile. Pages show a loading placeholder until their data arrives, and an error with Retry if it can't load (they also retry on their own when the connection comes back), never an empty list by mistake.
 
 ## Install
 
@@ -41,7 +43,7 @@ The installer does the following:
 
 Open the domain, create the admin with the setup token, scan the QR code with an authenticator app, and you are in.
 
-Installer options: `--version v0.3.0`, `--port 8787`, `--no-browser`, and `--build`, which builds from a checkout instead of downloading.
+Installer options: `--version v0.4.0`, `--port 8787`, `--no-browser`, and `--build`, which builds from a checkout instead of downloading.
 
 ### After installing
 
@@ -99,7 +101,7 @@ Every deploy command runs with `bash -l` in the project folder, or in the remote
 Push a tag, or run **Actions → Release → Run workflow** with a version:
 
 ```bash
-git tag v0.3.0 && git push origin v0.3.0
+git tag v0.4.0 && git push origin v0.4.0
 ```
 
 The workflow builds `cloud-ai-linux-x86_64` and `cloud-ai-linux-aarch64`, each with a `.sha256` file, and publishes a GitHub release.

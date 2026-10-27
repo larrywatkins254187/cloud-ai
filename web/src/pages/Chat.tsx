@@ -5,6 +5,8 @@ import {
   Bot,
   PanelRight,
   Square,
+  SquareTerminal,
+  Skull,
   Brain,
   ChevronRight,
   Clock,
@@ -29,6 +31,8 @@ import { DeployBanner } from "../components/DeployStatus";
 import { ErrorState, queryGate, Skeleton, StaleNotice } from "../components/Loadable";
 import { AgentsPanel, AgentStatusBadge, useStopAgent } from "../components/AgentsPanel";
 import { buildAgents, isAgentTool, type SubAgent } from "../lib/agents";
+import { BackgroundList, useBackgroundActions } from "../components/BackgroundPanel";
+import { buildBackground, isBackgroundCall, withLiveStatus, type BgTask } from "../lib/background";
 import { Badge, Button, cx, IconButton, Modal, StatusDot, Toggle, useAction, useConfirm, useConfirmWithOption, useToast } from "../components/ui";
 import { api } from "../lib/api";
 import { duration, modeLabel, timeAgo, tokens, toolName } from "../lib/format";
@@ -55,7 +59,7 @@ function buildItems(messages: Msg[], requests: Req[]): Item[] {
   const items: Item[] = [];
   for (const m of messages) {
     if (m.data?.parent) continue;
-    if (m.kind === "tool_result" || m.kind === "agent") continue;
+    if (m.kind === "tool_result" || m.kind === "agent" || m.kind === "shell") continue;
     if (m.kind === "tool_use") {
       const id = m.data.id;
       if (m.data.name === "AskUserQuestion") continue;
@@ -280,8 +284,28 @@ export default function Chat() {
   const agents = useMemo(() => buildAgents(msgsQ.data?.messages ?? [], chatActive), [msgsQ.data, chatActive]);
   const agentByRef = useMemo(() => new Map<string, SubAgent>(agents.map((a) => [a.ref, a])), [agents]);
   const runningAgents = agents.filter((a) => a.status === "running").length;
+  const bgRaw = useMemo(() => buildBackground(msgsQ.data?.messages ?? []), [msgsQ.data]);
+  const bgHasRunning = bgRaw.some((t) => t.status === "running");
+  const liveQ = useQuery({
+    queryKey: ["bg-live", id, bgRaw.length],
+    queryFn: () => api.get<{ alive: boolean; running: string[] }>(`/api/chats/${id}/background`),
+    enabled: bgHasRunning,
+    refetchInterval: bgHasRunning ? 5000 : false,
+  });
+  const bg = useMemo(() => withLiveStatus(bgRaw, bgHasRunning ? liveQ.data : undefined, liveQ.dataUpdatedAt), [bgRaw, bgHasRunning, liveQ.data, liveQ.dataUpdatedAt]);
+  const bgByRef = useMemo(() => new Map<string, BgTask>(bg.filter((t) => t.ref).map((t) => [t.ref, t])), [bg]);
+  const runningBg = bg.filter((t) => t.status === "running").length;
+  const [panelTab, setPanelTab] = useState<"agents" | "background">("agents");
+  const [bgFocus, setBgFocus] = useState<string | null>(null);
+  const bgActions = useBackgroundActions(id);
+  const openBg = (taskId: string) => {
+    setBgFocus(taskId);
+    setPanelTab("background");
+    setPanel(true);
+  };
   const openAgent = (ref: string) => {
     setFocus(ref);
+    setPanelTab("agents");
     setPanel(true);
   };
 
@@ -341,17 +365,21 @@ export default function Chat() {
           <span>{tokens(chat.input_tokens + chat.output_tokens)} tok</span>
         </div>
         <button
-          title="Sub-agents"
-          aria-label="Sub-agents"
+          title="Sub-agents and background tasks"
+          aria-label="Sub-agents and background tasks"
           onClick={() => setPanel(!panel)}
           className={cx(
             "relative inline-flex h-9 items-center gap-1 rounded-lg px-2 text-muted hover:bg-panel-2 hover:text-text transition",
             panel && "bg-panel-2 text-text",
           )}
         >
-          {agents.length > 0 ? <Bot className="size-4" /> : <PanelRight className="size-4" />}
-          {agents.length > 0 && <span className="text-xs tabular-nums">{runningAgents > 0 ? `${runningAgents}/${agents.length}` : agents.length}</span>}
-          {runningAgents > 0 && <span className="absolute top-1.5 right-1 size-1.5 rounded-full bg-accent pulse-dot" />}
+          {agents.length > 0 ? <Bot className="size-4" /> : bg.length > 0 ? <SquareTerminal className="size-4" /> : <PanelRight className="size-4" />}
+          {agents.length + bg.length > 0 && (
+            <span className="text-xs tabular-nums">
+              {runningAgents + runningBg > 0 ? `${runningAgents + runningBg}/${agents.length + bg.length}` : agents.length + bg.length}
+            </span>
+          )}
+          {runningAgents + runningBg > 0 && <span className="absolute top-1.5 right-1 size-1.5 rounded-full bg-accent pulse-dot" />}
         </button>
         <IconButton title="Chat settings" onClick={() => setSettings(true)}>
           <SlidersHorizontal className="size-4" />
@@ -450,8 +478,27 @@ export default function Chat() {
             ) : it.type === "tool" ? (
               (() => {
                 const agent = isAgentTool(it.use.data?.name) ? agentByRef.get(it.use.data.id) : undefined;
+                const task = isBackgroundCall(it.use) ? bgByRef.get(it.use.data.id) : undefined;
+                const badge = agent ? <AgentStatusBadge status={agent.status} /> : task ? <AgentStatusBadge status={task.status} /> : undefined;
                 return (
-                  <ToolCard key={it.use.id} use={it.use} result={it.result} badge={agent ? <AgentStatusBadge status={agent.status} /> : undefined}>
+                  <ToolCard key={it.use.id} use={it.use} result={it.result} badge={badge}>
+                    {task && (
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" icon={<PanelRight className="size-3.5" />} onClick={() => openBg(task.taskId)}>
+                          {task.status === "running" ? "Watch output" : "Show output"}
+                        </Button>
+                        {task.status === "running" && (
+                          <>
+                            <Button size="sm" variant="outline" icon={<Square className="size-3.5" />} onClick={() => bgActions.stop(task)}>
+                              Stop
+                            </Button>
+                            <Button size="sm" variant="outline" className="text-danger" icon={<Skull className="size-3.5" />} onClick={() => bgActions.kill(task)}>
+                              Kill
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
                     {agent && (
                       <div className="flex flex-wrap gap-2">
                         <Button size="sm" variant="outline" icon={<PanelRight className="size-3.5" />} onClick={() => openAgent(agent.ref)}>
@@ -522,6 +569,11 @@ export default function Chat() {
               onFocus={setFocus}
               onClose={() => setPanel(false)}
               renderSteps={renderSteps}
+              tab={panelTab}
+              onTab={setPanelTab}
+              bgCount={bg.length}
+              bgRunning={runningBg}
+              background={<BackgroundList chatId={id} tasks={bg} focus={bgFocus} onFocus={setBgFocus} isCodex={chat.tool === "codex"} />}
             />
           </aside>
         </>

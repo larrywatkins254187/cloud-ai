@@ -79,14 +79,13 @@ function AddProject({ open, onClose }: { open: boolean; onClose: () => void }) {
       {source === "remote" && (
         <div className="grid sm:grid-cols-2 gap-4">
           <Field label="Server">
-            <Select value={importServer} onChange={(e) => setImportServer(e.target.value ? Number(e.target.value) : "")}>
-              <option value="">Choose…</option>
-              {servers.data?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </Select>
+            <Select
+              value={importServer === "" ? null : importServer}
+              onChange={(id) => setImportServer(id)}
+              placeholder="Choose a server…"
+              emptyText="No servers found"
+              options={(servers.data ?? []).map((s) => ({ value: s.id, label: s.name, hint: `${s.username}@${s.host}` }))}
+            />
           </Field>
           <Field label="Path on that server">
             <Input value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/var/www/app" />

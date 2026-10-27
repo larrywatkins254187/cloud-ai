@@ -135,7 +135,7 @@ pub fn spawn(st: St) {
 pub fn reap_idle(st: &St, idle: Duration) -> usize {
     let victims: Vec<Arc<ClaudeSession>> = {
         let map = st.runner.claude.lock().unwrap();
-        map.values().filter(|s| !s.is_busy() && s.idle_for() >= idle).cloned().collect()
+        map.values().filter(|s| !s.is_busy() && !s.has_background() && s.idle_for() >= idle).cloned().collect()
     };
     for s in &victims {
         s.kill();
@@ -290,6 +290,35 @@ fn finish(st: &St, run_id: i64, mut outcome: TurnOutcome) -> Result<()> {
             "UPDATE chats SET cost_usd=cost_usd+?2, input_tokens=input_tokens+?3, output_tokens=output_tokens+?4 WHERE id=?1",
             params![run.chat_id, outcome.cost_usd.unwrap_or(0.0), outcome.input_tokens, outcome.output_tokens],
         )?;
+        if !outcome.usage.is_empty() {
+            let chat = get_chat(&st.db, run.chat_id)?;
+            let at = now();
+            for u in &outcome.usage {
+                c.execute(
+                    "INSERT INTO run_usage(run_id,chat_id,project_id,user_id,author,schedule_id,source,tool,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,web_search_requests,cost_usd,at)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                    params![
+                        run_id,
+                        run.chat_id,
+                        chat.project_id,
+                        run.user_id,
+                        run.author,
+                        run.schedule_id,
+                        run.source,
+                        chat.tool,
+                        if u.model.is_empty() { "default" } else { u.model.as_str() },
+                        u.input,
+                        u.output,
+                        u.cache_read,
+                        u.cache_write,
+                        u.reasoning,
+                        u.web_search,
+                        u.cost_usd,
+                        at
+                    ],
+                )?;
+            }
+        }
     }
     expire_requests_of_run(st, run_id);
     if let Some(err) = &outcome.error {

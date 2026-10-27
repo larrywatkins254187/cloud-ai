@@ -1,6 +1,6 @@
 //! Codex CLI driven through `codex app-server` (JSON-RPC over stdio). A single
 //! app-server process hosts every Codex chat's thread, which keeps RAM low.
-use super::{codex_policy, prompt_with_attachments, question, system_prompt, Attachment, TurnOutcome};
+use super::{codex_policy, prompt_with_attachments, question, system_prompt, Attachment, ModelUsage, TurnOutcome};
 use crate::events::Event;
 use crate::runner;
 use crate::settings;
@@ -27,7 +27,25 @@ struct TurnCtx {
     last_text: String,
     input_tokens: i64,
     output_tokens: i64,
+    cached_tokens: i64,
+    reasoning_tokens: i64,
+    model: String,
     failure: Option<String>,
+}
+
+impl TurnCtx {
+    /// Codex counts cached tokens inside `inputTokens`; split them out.
+    fn usage(&self) -> Vec<ModelUsage> {
+        let mu = ModelUsage {
+            model: self.model.clone(),
+            input: (self.input_tokens - self.cached_tokens).max(0),
+            output: self.output_tokens,
+            cache_read: self.cached_tokens,
+            reasoning: self.reasoning_tokens,
+            ..Default::default()
+        };
+        if mu.is_empty() { vec![] } else { vec![mu] }
+    }
 }
 
 /// A sub-agent thread (Codex collab `spawnAgent`) and where its output goes.
@@ -57,6 +75,8 @@ pub struct CodexProc {
     next_id: AtomicI64,
     pending: Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>,
     loaded: Mutex<HashSet<String>>,
+    /// Model each loaded thread runs on, as reported by thread/start|resume.
+    thread_models: Mutex<HashMap<String, String>>,
     /// Active turn per thread id.
     turns: Mutex<HashMap<String, TurnCtx>>,
     /// Sub-agent threads spawned by a chat's turn, by thread id.
@@ -197,6 +217,7 @@ pub async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
         next_id: AtomicI64::new(1),
         pending: Mutex::new(HashMap::new()),
         loaded: Mutex::new(HashSet::new()),
+        thread_models: Mutex::new(HashMap::new()),
         turns: Mutex::new(HashMap::new()),
         children: Mutex::new(HashMap::new()),
         alive: AtomicBool::new(true),
@@ -334,6 +355,8 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
             let last = &params["tokenUsage"]["last"];
             t.input_tokens += last["inputTokens"].as_i64().unwrap_or(0);
             t.output_tokens += last["outputTokens"].as_i64().unwrap_or(0);
+            t.cached_tokens += last["cachedInputTokens"].as_i64().unwrap_or(0);
+            t.reasoning_tokens += last["reasoningOutputTokens"].as_i64().unwrap_or(0);
         }
         "error" => {
             if params["willRetry"] != true {
@@ -366,6 +389,7 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
                 cost_usd: None,
                 input_tokens: ctx.input_tokens,
                 output_tokens: ctx.output_tokens,
+                usage: ctx.usage(),
             };
             if let Some(done) = ctx.done.take() {
                 let _ = done.send(outcome);
@@ -625,7 +649,10 @@ async fn run_turn_inner(st: &St, chat: &Chat, project: &Project, run: &Run, atts
                 )
                 .await;
             match res {
-                Ok(_) => {
+                Ok(res) => {
+                    if let Some(m) = res["model"].as_str() {
+                        p.thread_models.lock().unwrap().insert(tid.clone(), m.to_string());
+                    }
                     p.loaded.lock().unwrap().insert(tid.clone());
                 }
                 Err(e) => {
@@ -648,10 +675,17 @@ async fn run_turn_inner(st: &St, chat: &Chat, project: &Project, run: &Run, atts
                 .await?;
             let tid = res["thread"]["id"].as_str().ok_or_else(|| anyhow!("thread/start returned no id"))?.to_string();
             st.db.conn().execute("UPDATE chats SET cli_session_id=?2 WHERE id=?1", rusqlite::params![chat.id, tid])?;
+            if let Some(m) = res["model"].as_str() {
+                p.thread_models.lock().unwrap().insert(tid.clone(), m.to_string());
+            }
             p.loaded.lock().unwrap().insert(tid.clone());
             tid
         }
     };
+    let turn_model = model
+        .clone()
+        .or_else(|| p.thread_models.lock().unwrap().get(&thread_id).cloned())
+        .unwrap_or_else(|| "default".into());
     let (tx, rx) = oneshot::channel();
     p.turns.lock().unwrap().insert(
         thread_id.clone(),
@@ -664,6 +698,9 @@ async fn run_turn_inner(st: &St, chat: &Chat, project: &Project, run: &Run, atts
             last_text: String::new(),
             input_tokens: 0,
             output_tokens: 0,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+            model: turn_model,
             failure: None,
         },
     );

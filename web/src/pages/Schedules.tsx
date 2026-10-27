@@ -4,7 +4,8 @@ import { ArrowDown, ArrowUp, CalendarClock, Pencil, Play, Plus, Trash2, X } from
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { AgentPicker } from "../components/AgentPicker";
-import { Badge, Button, Card, cx, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, Toggle, useAction, useConfirm } from "../components/ui";
+import { Badge, Button, Card, cx, DateTimePicker, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, TimePicker, Toggle, useAction, useConfirm } from "../components/ui";
+import { ymd } from "../components/controls";
 import { api } from "../lib/api";
 import { modeLabel, timeAgo, toolName } from "../lib/format";
 import type { Chat, Project, Schedule } from "../lib/types";
@@ -154,13 +155,13 @@ function Editor({ initial, id, onClose }: { initial: Draft; id?: number; onClose
           <Input value={d.name} onChange={(e) => up({ name: e.target.value })} placeholder="Nightly dependency check" />
         </Field>
         <Field label="Project">
-          <Select value={d.project_id || ""} onChange={(e) => up({ project_id: Number(e.target.value), chat_id: null })}>
-            {projects.data?.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
+          <Select
+            value={d.project_id || null}
+            onChange={(id) => up({ project_id: id, chat_id: null })}
+            placeholder="Choose a project…"
+            emptyText="No projects found"
+            options={(projects.data ?? []).map((p) => ({ value: p.id, label: p.name, hint: p.path }))}
+          />
         </Field>
       </div>
 
@@ -184,12 +185,12 @@ function Editor({ initial, id, onClose }: { initial: Draft; id?: number; onClose
         </div>
         {d.kind === "once" && (
           <Field label="Date and time">
-            <Input type="datetime-local" value={d.run_at ?? ""} onChange={(e) => up({ run_at: e.target.value })} />
+            <DateTimePicker value={d.run_at ?? ""} onChange={(run_at) => up({ run_at })} min={ymd(new Date())} />
           </Field>
         )}
         {(d.kind === "daily" || d.kind === "weekly") && (
           <Field label="Time">
-            <Input type="time" value={d.time_of_day ?? ""} onChange={(e) => up({ time_of_day: e.target.value })} className="w-36" />
+            <TimePicker value={d.time_of_day ?? ""} onChange={(time_of_day) => up({ time_of_day })} className="w-40" />
           </Field>
         )}
         {d.kind === "weekly" && (
@@ -245,22 +246,25 @@ function Editor({ initial, id, onClose }: { initial: Draft; id?: number; onClose
 
       <div className="space-y-2">
         <div className="text-sm font-medium">Conversation</div>
-        <Select value={d.mode} onChange={(e) => up({ mode: e.target.value as any })}>
-          <option value="new">Start a new chat every time</option>
-          <option value="continue">Continue the same chat every time</option>
-        </Select>
+        <Select
+          value={d.mode}
+          onChange={(mode) => up({ mode })}
+          aria-label="Conversation"
+          options={[
+            { value: "new" as const, label: "Start a new chat every time" },
+            { value: "continue" as const, label: "Continue the same chat every time" },
+          ]}
+        />
         {d.mode === "continue" && (
           <Field label="Chat" hint="Leave empty to create one on the first run and keep using it">
-            <Select value={d.chat_id ?? ""} onChange={(e) => up({ chat_id: e.target.value ? Number(e.target.value) : null })}>
-              <option value="">Create on first run</option>
-              {chats.data
-                ?.filter((c) => c.tool === d.tool)
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.title}
-                  </option>
-                ))}
-            </Select>
+            <Select
+              value={d.chat_id ?? 0}
+              onChange={(id) => up({ chat_id: id || null })}
+              options={[
+                { value: 0, label: "Create on first run" },
+                ...(chats.data ?? []).filter((c) => c.tool === d.tool).map((c) => ({ value: c.id, label: c.title, hint: timeAgo(c.updated_at) })),
+              ]}
+            />
           </Field>
         )}
       </div>

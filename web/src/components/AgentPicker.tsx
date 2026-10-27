@@ -40,43 +40,46 @@ export function AgentPicker({ v, set, compact, lockTool }: { v: AgentConfig; set
         className={cls}
         value={v.tool}
         disabled={lockTool}
-        onChange={(e) => set({ ...v, tool: e.target.value as Tool, model: "", effort: "" })}
+        onChange={(t) => set({ ...v, tool: t, model: "", effort: "" })}
         aria-label="Tool"
-      >
-        <option value="claude">Claude Code</option>
-        <option value="codex">Codex</option>
-      </Select>
-      <div className="flex gap-1">
-        <Select className={cls} value={v.model} onChange={(e) => set({ ...v, model: e.target.value, effort: "" })} aria-label="Model">
-          <option value="">Default model</option>
-          {list.map((m) => (
-            <option key={m.id} value={m.id} title={m.description}>
-              {m.name}
-            </option>
-          ))}
-          {v.model && !list.some((m) => m.id === v.model) && <option value={v.model}>{v.model}</option>}
-        </Select>
+        options={[
+          { value: "claude" as Tool, label: "Claude Code" },
+          { value: "codex" as Tool, label: "Codex" },
+        ]}
+      />
+      <div className="flex gap-1 min-w-0">
+        <Select
+          className={cls}
+          value={v.model}
+          onChange={(m) => set({ ...v, model: m, effort: "" })}
+          aria-label="Model"
+          searchable={list.length > 5}
+          options={[
+            { value: "", label: "Default model" },
+            ...list.map((m) => ({ value: m.id, label: m.name, hint: m.description || (m.name !== m.id ? m.id : undefined) })),
+            ...(v.model && !list.some((m) => m.id === v.model) ? [{ value: v.model, label: v.model }] : []),
+          ]}
+        />
         {!compact && (
           <IconButton title="Refresh model list from the CLIs" onClick={refresh} disabled={refreshing}>
             <RefreshCw className={cx("size-4", refreshing && "animate-spin")} />
           </IconButton>
         )}
       </div>
-      <Select className={cls} value={v.effort} onChange={(e) => set({ ...v, effort: e.target.value })} aria-label="Reasoning effort">
-        <option value="">Default effort</option>
-        {efforts.map((e) => (
-          <option key={e} value={e}>
-            {e} effort
-          </option>
-        ))}
-      </Select>
-      <Select className={cls} value={v.permission_mode} onChange={(e) => set({ ...v, permission_mode: e.target.value as PermMode })} aria-label="Permissions">
-        {MODES.map((m) => (
-          <option key={m.id} value={m.id} title={m.hint}>
-            {m.label}
-          </option>
-        ))}
-      </Select>
+      <Select
+        className={cls}
+        value={v.effort}
+        onChange={(e) => set({ ...v, effort: e })}
+        aria-label="Reasoning effort"
+        options={[{ value: "", label: "Default effort" }, ...efforts.map((e) => ({ value: e, label: `${e[0].toUpperCase()}${e.slice(1)} effort` }))]}
+      />
+      <Select
+        className={cls}
+        value={v.permission_mode}
+        onChange={(m) => set({ ...v, permission_mode: m })}
+        aria-label="Permissions"
+        options={MODES.map((m) => ({ value: m.id as PermMode, label: m.label, hint: m.hint }))}
+      />
     </div>
   );
 }

@@ -44,14 +44,16 @@ function ScopeBar({
           ))}
         </div>
       )}
-      <Select className="w-auto h-9" value={project} onChange={(e) => setProject(e.target.value ? Number(e.target.value) : "")}>
-        <option value="">Global (all projects)</option>
-        {projects.map((p) => (
-          <option key={p.id} value={p.id}>
-            Project: {p.name}
-          </option>
-        ))}
-      </Select>
+      <Select
+        className="w-64 max-w-full h-9"
+        value={project}
+        onChange={(id) => setProject(id)}
+        aria-label="Scope"
+        options={[
+          { value: "" as number | "", label: "Global (all projects)" },
+          ...projects.map((p) => ({ value: p.id as number | "", label: p.name, hint: p.path, group: "Project" })),
+        ]}
+      />
     </div>
   );
 }
@@ -145,16 +147,21 @@ function Skills({ project }: { project: number | "" }) {
                   <Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="my-skill" />
                 </Field>
                 <Field label="For">
-                  <Select value={edit.tool} onChange={(e) => setEdit({ ...edit, tool: e.target.value as Tool })}>
-                    <option value="claude">Claude Code</option>
-                    <option value="codex">Codex</option>
-                  </Select>
+                  <Select
+                    value={edit.tool}
+                    onChange={(t) => setEdit({ ...edit, tool: t })}
+                    options={[
+                      { value: "claude" as Tool, label: "Claude Code" },
+                      { value: "codex" as Tool, label: "Codex" },
+                    ]}
+                  />
                 </Field>
                 <Field label="Scope">
-                  <Select value={edit.scope} onChange={(e) => setEdit({ ...edit, scope: e.target.value })}>
-                    <option value="user">Global</option>
-                    {project && <option value="project">This project</option>}
-                  </Select>
+                  <Select
+                    value={edit.scope}
+                    onChange={(sc) => setEdit({ ...edit, scope: sc })}
+                    options={[{ value: "user", label: "Global" }, ...(project ? [{ value: "project", label: "This project" }] : [])]}
+                  />
                 </Field>
               </div>
             )}
@@ -383,19 +390,27 @@ function Mcp({ tool, project }: { tool: Tool; project: number | "" }) {
             <Input value={v.name} onChange={(e) => setV({ ...v, name: e.target.value })} placeholder="postgres" />
           </Field>
           <Field label="Type">
-            <Select value={v.kind} onChange={(e) => setV({ ...v, kind: e.target.value })}>
-              <option value="stdio">Command (stdio)</option>
-              <option value="http">URL (HTTP)</option>
-            </Select>
+            <Select
+              value={v.kind}
+              onChange={(k) => setV({ ...v, kind: k })}
+              options={[
+                { value: "stdio", label: "Command (stdio)" },
+                { value: "http", label: "URL (HTTP)" },
+              ]}
+            />
           </Field>
         </div>
         {tool === "claude" && project && (
           <Field label="Scope">
-            <Select value={v.scope} onChange={(e) => setV({ ...v, scope: e.target.value })}>
-              <option value="user">Global</option>
-              <option value="project">Project (.mcp.json, shared in git)</option>
-              <option value="local">Project, only on this server</option>
-            </Select>
+            <Select
+              value={v.scope}
+              onChange={(sc) => setV({ ...v, scope: sc })}
+              options={[
+                { value: "user", label: "Global" },
+                { value: "project", label: "Project", hint: ".mcp.json, shared in git" },
+                { value: "local", label: "Project, only on this server" },
+              ]}
+            />
           </Field>
         )}
         {v.kind === "stdio" ? (

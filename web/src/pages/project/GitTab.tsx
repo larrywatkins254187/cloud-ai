@@ -51,16 +51,14 @@ export default function GitTab({ project, chatId }: { project: Project; chatId?:
             <span className="font-medium">{s.branch}</span>
           ) : (
             <Select
-              className="h-8 w-auto text-sm"
+              className="h-8 w-56 max-w-full text-sm"
               value={s.branch}
-              onChange={(e) => act(() => api.post(`${base}/checkout`, { branch: e.target.value }), `Switched to ${e.target.value}`)}
-            >
-              {branches.data?.map((b) => (
-                <option key={b.name} value={b.name}>
-                  {b.name}
-                </option>
-              ))}
-            </Select>
+              aria-label="Branch"
+              emptyText="No branches match"
+              onChange={(b) => act(() => api.post(`${base}/checkout`, { branch: b }), `Switched to ${b}`)}
+              options={(branches.data?.length ? branches.data : [{ name: s.branch } as { name: string }]).map((b) => ({ value: b.name, label: b.name }))}
+              searchable={(branches.data?.length ?? 0) > 5}
+            />
           )}
           {s.ahead > 0 && <Badge tone="accent">↑{s.ahead}</Badge>}
           {s.behind > 0 && <Badge tone="warn">↓{s.behind}</Badge>}

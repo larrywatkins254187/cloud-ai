@@ -56,10 +56,14 @@ function UserModal({ user, onClose }: { user?: User; onClose: () => void }) {
         <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
       </Field>
       <Field label="Role">
-        <Select value={role} onChange={(e) => setRole(e.target.value as any)}>
-          <option value="user">User — only assigned projects</option>
-          <option value="admin">Admin — everything</option>
-        </Select>
+        <Select
+          value={role}
+          onChange={(r) => setRole(r)}
+          options={[
+            { value: "user" as const, label: "User", hint: "Only assigned projects" },
+            { value: "admin" as const, label: "Admin", hint: "Everything" },
+          ]}
+        />
       </Field>
       {role === "user" && (
         <div className="space-y-2">

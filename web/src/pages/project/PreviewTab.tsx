@@ -23,6 +23,7 @@ import { useNavigate } from "react-router";
 import { AgentPicker, type AgentConfig } from "../../components/AgentPicker";
 import { Badge, Button, Card, cx, IconButton, Input, Modal, Select, Textarea, Toggle, useAction, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
+import { toolName } from "../../lib/format";
 import type { Attachment, Chat, Project } from "../../lib/types";
 
 type El = {
@@ -273,14 +274,15 @@ function SendDialog({
         </>
       }
     >
-      <Select value={target} onChange={(e) => setTarget(e.target.value === "new" ? "new" : Number(e.target.value))}>
-        <option value="new">New chat</option>
-        {chats.data?.map((c) => (
-          <option key={c.id} value={c.id}>
-            Continue: {c.title}
-          </option>
-        ))}
-      </Select>
+      <Select
+        value={target}
+        onChange={setTarget}
+        aria-label="Send to"
+        options={[
+          { value: "new" as number | "new", label: "New chat" },
+          ...(chats.data ?? []).map((c) => ({ value: c.id as number | "new", label: c.title, hint: toolName(c.tool), group: "Continue a chat" })),
+        ]}
+      />
       {target === "new" && <AgentPicker v={cfg} set={setCfg} />}
       <Textarea value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="Anything else the AI should know or do…" />
       <div className="flex flex-wrap gap-x-6">

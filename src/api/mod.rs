@@ -5,6 +5,7 @@ mod projects;
 mod schedules;
 mod servers;
 mod system;
+pub mod usage;
 mod users;
 
 use crate::auth;
@@ -37,6 +38,9 @@ pub fn router() -> Router<St> {
         .route("/api/chats/{id}/messages", get(chats::messages).post(chats::send))
         .route("/api/chats/{id}/stop", post(chats::stop))
         .route("/api/chats/{id}/agents/stop", post(chats::stop_agent))
+        .route("/api/chats/{id}/background", get(chats::background))
+        .route("/api/chats/{id}/background/{task_id}/output", get(chats::background_output))
+        .route("/api/chats/{id}/background/{task_id}/stop", post(chats::background_stop))
         .route("/api/chats/{id}/merge", post(chats::merge))
         .route("/api/runs/{id}/cancel", post(chats::cancel_run))
         .route("/api/requests/{id}/answer", post(chats::answer))
@@ -77,6 +81,7 @@ pub fn router() -> Router<St> {
         .route("/api/settings", get(system::get_settings).put(system::put_settings))
         .route("/api/system", get(system::status))
         .route("/api/usage/refresh", post(system::refresh_usage))
+        .route("/api/usage/report", get(usage::report))
         .route("/api/events", get(system::events))
         .route("/api/models", get(system::models))
         .route("/api/models/refresh", post(system::refresh_models))

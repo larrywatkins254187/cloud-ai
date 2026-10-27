@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ErrorState, QueryStatus, SkeletonList } from "../../components/Loadable";
 import { Copy, Pencil, Plug, Plus, Server as ServerIcon, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { Badge, Button, Card, Empty, Field, IconButton, Input, Modal, PageHeader, Select, Textarea, useAction, useConfirm, useToast } from "../../components/ui";
+import { Badge, Button, Card, Empty, Field, IconButton, Input, Modal, NumberInput, PageHeader, Select, Textarea, useAction, useConfirm, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
 import type { Server } from "../../lib/types";
 
@@ -18,7 +18,7 @@ function ServerModal({ server, onClose, pubkey }: { server?: Server; onClose: ()
   const { busy, run } = useAction();
   const qc = useQueryClient();
   const save = async () => {
-    const r = await run(() => (server ? api.put(`/api/servers/${server.id}`, v) : api.post("/api/servers", v)), "Saved");
+    const r = await run(() => (server ? api.put(`/api/servers/${server.id}`, { ...v, port: Number(v.port) || 22 }) : api.post("/api/servers", { ...v, port: Number(v.port) || 22 })), "Saved");
     if (r) {
       qc.invalidateQueries({ queryKey: ["servers"] });
       onClose();
@@ -51,15 +51,19 @@ function ServerModal({ server, onClose, pubkey }: { server?: Server; onClose: ()
           <Input value={v.username} onChange={(e) => setV({ ...v, username: e.target.value })} />
         </Field>
         <Field label="Port">
-          <Input type="number" value={v.port} onChange={(e) => setV({ ...v, port: Number(e.target.value) })} />
+          <NumberInput value={v.port} min={1} max={65535} onChange={(x) => setV({ ...v, port: x === "" ? ("" as unknown as number) : Number(x) })} />
         </Field>
       </div>
       <Field label="Authentication">
-        <Select value={v.auth_type} onChange={(e) => setV({ ...v, auth_type: e.target.value as any })}>
-          <option value="app_key">This panel's SSH key (recommended)</option>
-          <option value="key">My own private key</option>
-          <option value="password">Password</option>
-        </Select>
+        <Select
+          value={v.auth_type}
+          onChange={(t) => setV({ ...v, auth_type: t })}
+          options={[
+            { value: "app_key" as const, label: "This panel's SSH key", hint: "Recommended" },
+            { value: "key" as const, label: "My own private key" },
+            { value: "password" as const, label: "Password" },
+          ]}
+        />
       </Field>
       {v.auth_type === "app_key" && pubkey && (
         <div className="space-y-1.5">

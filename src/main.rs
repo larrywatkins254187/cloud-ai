@@ -1,6 +1,7 @@
 mod agents;
 mod api;
 mod auth;
+mod background;
 mod browser;
 mod catalog;
 mod chats;

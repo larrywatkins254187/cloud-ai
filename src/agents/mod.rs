@@ -17,6 +17,60 @@ pub struct TurnOutcome {
     pub cost_usd: Option<f64>,
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// Token breakdown per model used in this turn (sub-agents can use other models).
+    pub usage: Vec<ModelUsage>,
+}
+
+/// Tokens one model used in one turn. `input` excludes cached tokens;
+/// `reasoning` is already counted in `output`.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct ModelUsage {
+    pub model: String,
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write: i64,
+    pub reasoning: i64,
+    pub web_search: i64,
+    /// Cost reported by the CLI; None when it reports none (Codex), so it is estimated later.
+    pub cost_usd: Option<f64>,
+}
+
+impl ModelUsage {
+    pub fn is_empty(&self) -> bool {
+        self.input == 0 && self.output == 0 && self.cache_read == 0 && self.cache_write == 0 && self.cost_usd.unwrap_or(0.0) <= 0.0
+    }
+
+    /// Claude's per-model totals (`modelUsage` entries) are cumulative for the process.
+    pub fn from_claude(model: &str, m: &Value) -> Self {
+        let n = |k: &str| m[k].as_i64().unwrap_or(0);
+        ModelUsage {
+            model: model.to_string(),
+            input: n("inputTokens"),
+            output: n("outputTokens"),
+            cache_read: n("cacheReadInputTokens"),
+            cache_write: n("cacheCreationInputTokens"),
+            reasoning: n("thinkingTokens"),
+            web_search: n("webSearchRequests"),
+            cost_usd: m["costUSD"].as_f64(),
+        }
+    }
+
+    /// `self - prev`, clamped at zero.
+    pub fn minus(&self, prev: Option<&ModelUsage>) -> Self {
+        let Some(p) = prev else { return self.clone() };
+        let d = |a: i64, b: i64| (a - b).max(0);
+        ModelUsage {
+            model: self.model.clone(),
+            input: d(self.input, p.input),
+            output: d(self.output, p.output),
+            cache_read: d(self.cache_read, p.cache_read),
+            cache_write: d(self.cache_write, p.cache_write),
+            reasoning: d(self.reasoning, p.reasoning),
+            web_search: d(self.web_search, p.web_search),
+            cost_usd: self.cost_usd.map(|c| (c - p.cost_usd.unwrap_or(0.0)).max(0.0)),
+        }
+    }
 }
 
 impl TurnOutcome {

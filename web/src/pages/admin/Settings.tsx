@@ -1,12 +1,124 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryGate } from "../../components/Loadable";
-import { Download, RefreshCw, Save, Send } from "lucide-react";
+import { ArrowDown, ArrowUp, Download, Plus, RefreshCw, RotateCcw, Save, Send, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Badge, Button, Card, Field, Input, PageHeader, Select, Textarea, Toggle, useAction, useConfirm, useToast } from "../../components/ui";
+import { Badge, Button, Card, Field, IconButton, Input, NumberInput, PageHeader, Select, Textarea, Toggle, useAction, useConfirm, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
 import { MODES } from "../../lib/format";
 
 type S = Record<string, string>;
+
+/** Every IANA timezone the browser knows, with its current UTC offset. */
+function timezoneOptions(current?: string) {
+  let zones: string[] = [];
+  try {
+    zones = (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf("timeZone");
+  } catch {
+    zones = [];
+  }
+  if (!zones.includes("UTC")) zones = ["UTC", ...zones];
+  if (current && !zones.includes(current)) zones = [current, ...zones];
+  const now = new Date();
+  return zones.map((z) => {
+    let off = "";
+    try {
+      off = new Intl.DateTimeFormat("en-US", { timeZone: z, timeZoneName: "shortOffset" }).formatToParts(now).find((p) => p.type === "timeZoneName")?.value ?? "";
+    } catch {
+      off = "";
+    }
+    return { value: z, label: z.replace(/_/g, " "), hint: off.replace("GMT", "UTC") || undefined };
+  });
+}
+
+type Price = { model: string; input: number | string; cache_read: number | string; cache_write: number | string; output: number | string };
+
+const DEFAULT_PRICES: Price[] = [
+  { model: "*-mini*", input: 0.25, cache_read: 0.025, cache_write: 0, output: 2 },
+  { model: "gpt-5.2*", input: 1.75, cache_read: 0.175, cache_write: 0, output: 14 },
+  { model: "gpt-5.1*", input: 1.25, cache_read: 0.125, cache_write: 0, output: 10 },
+  { model: "gpt-5*", input: 1.25, cache_read: 0.125, cache_write: 0, output: 10 },
+  { model: "*", input: 1.75, cache_read: 0.175, cache_write: 0, output: 14 },
+];
+
+/** Turn half-typed numbers into numbers before saving. */
+function cleanPrices(json: string | undefined) {
+  if (!json?.trim()) return json ?? "";
+  try {
+    const rows = JSON.parse(json) as Price[];
+    const n = (x: number | string) => (Number.isFinite(Number(x)) ? Number(x) : 0);
+    return JSON.stringify(rows.map((r) => ({ model: r.model.trim(), input: n(r.input), cache_read: n(r.cache_read), cache_write: n(r.cache_write), output: n(r.output) })));
+  } catch {
+    return json;
+  }
+}
+
+/** Editable price list; stored as JSON in the `usage_prices` setting. */
+function PriceTable({ value, onChange }: { value: string; onChange: (json: string) => void }) {
+  let rows: Price[];
+  try {
+    rows = value.trim() ? JSON.parse(value) : DEFAULT_PRICES;
+    if (!Array.isArray(rows)) rows = DEFAULT_PRICES;
+  } catch {
+    rows = DEFAULT_PRICES;
+  }
+  const set = (next: Price[]) =>
+    onChange(JSON.stringify(next.map((r) => ({ ...r, input: num(r.input), cache_read: num(r.cache_read), cache_write: num(r.cache_write), output: num(r.output) }))));
+  // Keep partially typed numbers ("1.") while editing; they are stored as numbers.
+  const num = (x: number | string) => (typeof x === "number" ? x : x === "" || x.endsWith(".") ? x : Number(x));
+  const upd = (i: number, p: Partial<Price>) => set(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const move = (i: number, d: number) => {
+    const n = [...rows];
+    [n[i], n[i + d]] = [n[i + d], n[i]];
+    set(n);
+  };
+  const cols: { k: keyof Price; label: string }[] = [
+    { k: "input", label: "Input" },
+    { k: "cache_read", label: "Cached input" },
+    { k: "cache_write", label: "Cache write" },
+    { k: "output", label: "Output" },
+  ];
+  return (
+    <div className="space-y-2">
+      <div className="hidden md:grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))_auto] gap-2 px-1 text-[11px] font-medium text-muted">
+        <div>Model pattern</div>
+        {cols.map((c) => (
+          <div key={c.k}>{c.label} $/1M</div>
+        ))}
+        <div className="w-[104px]" />
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} className="grid grid-cols-2 md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))_auto] gap-2 items-center rounded-lg border border-border md:border-0 p-2 md:p-0">
+          <Input className="col-span-2 md:col-span-1 h-9 font-mono text-xs" value={r.model} onChange={(e) => upd(i, { model: e.target.value })} placeholder="gpt-5*" aria-label="Model pattern" />
+          {cols.map((c) => (
+            <label key={c.k} className="block">
+              <span className="md:hidden block text-[11px] text-muted mb-0.5">{c.label} $/1M</span>
+              <NumberInput className="h-9" decimals min={0} step={0.05} value={r[c.k]} onChange={(x) => upd(i, { [c.k]: x } as Partial<Price>)} aria-label={`${c.label} price`} />
+            </label>
+          ))}
+          <div className="col-span-2 md:col-span-1 flex justify-end">
+            <IconButton title="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+              <ArrowUp className="size-4" />
+            </IconButton>
+            <IconButton title="Move down" disabled={i === rows.length - 1} onClick={() => move(i, 1)}>
+              <ArrowDown className="size-4" />
+            </IconButton>
+            <IconButton title="Remove" onClick={() => set(rows.filter((_, j) => j !== i))}>
+              <X className="size-4" />
+            </IconButton>
+          </div>
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" icon={<Plus className="size-4" />} onClick={() => set([...rows, { model: "", input: 0, cache_read: 0, cache_write: 0, output: 0 }])}>
+          Add price
+        </Button>
+        <Button size="sm" variant="ghost" icon={<RotateCcw className="size-4" />} onClick={() => set(DEFAULT_PRICES)}>
+          Reset to defaults
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 type Target = "claude" | "codex" | "app";
 type VersionInfo = { installed: string | null; latest: string | null; update_available: boolean; error?: string | null };
@@ -105,7 +217,7 @@ export default function Settings() {
   const up = (k: string, val: string) => setV({ ...v, [k]: val });
   const bool = (k: string) => v[k] === "1" || v[k] === "true";
   const save = async () => {
-    const r = await run(() => api.put<S>("/api/settings", v), "Settings saved");
+    const r = await run(() => api.put<S>("/api/settings", { ...v, usage_prices: cleanPrices(v.usage_prices) }), "Settings saved");
     if (r) qc.setQueryData(["settings"], r);
   };
   return (
@@ -123,16 +235,16 @@ export default function Settings() {
           <div className="font-medium">Resources</div>
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Max parallel Claude Code sessions">
-              <Input type="number" min={1} value={v.max_claude ?? ""} onChange={(e) => up("max_claude", e.target.value)} />
+              <NumberInput min={1} max={50} value={v.max_claude ?? ""} onChange={(x) => up("max_claude", x)} />
             </Field>
             <Field label="Max parallel Codex sessions">
-              <Input type="number" min={1} value={v.max_codex ?? ""} onChange={(e) => up("max_codex", e.target.value)} />
+              <NumberInput min={1} max={50} value={v.max_codex ?? ""} onChange={(x) => up("max_codex", x)} />
             </Field>
             <Field label="Minimum free RAM to start a prompt (MB)" hint="Below this, prompts wait in the queue (swap is not counted)">
-              <Input type="number" value={v.ram_guard_mb ?? ""} onChange={(e) => up("ram_guard_mb", e.target.value)} />
+              <NumberInput min={0} step={50} value={v.ram_guard_mb ?? ""} onChange={(x) => up("ram_guard_mb", x)} suffix="MB" />
             </Field>
             <Field label="Stop idle agent processes after (minutes)" hint="The conversation resumes automatically on the next prompt">
-              <Input type="number" min={1} value={v.idle_kill_minutes ?? ""} onChange={(e) => up("idle_kill_minutes", e.target.value)} />
+              <NumberInput min={1} value={v.idle_kill_minutes ?? ""} onChange={(x) => up("idle_kill_minutes", x)} suffix="min" />
             </Field>
           </div>
         </Card>
@@ -141,16 +253,14 @@ export default function Settings() {
           <div className="font-medium">Agents</div>
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="Default permission mode for new chats">
-              <Select value={v.default_permission_mode} onChange={(e) => up("default_permission_mode", e.target.value)}>
-                {MODES.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label} — {m.hint}
-                  </option>
-                ))}
-              </Select>
+              <Select
+                value={v.default_permission_mode}
+                onChange={(m) => up("default_permission_mode", m)}
+                options={MODES.map((m) => ({ value: m.id, label: m.label, hint: m.hint }))}
+              />
             </Field>
             <Field label="Timezone for schedules">
-              <Input value={v.timezone ?? ""} onChange={(e) => up("timezone", e.target.value)} placeholder="Asia/Tehran" />
+              <Select value={v.timezone ?? ""} onChange={(tz) => up("timezone", tz)} searchable options={timezoneOptions(v.timezone)} placeholder="Asia/Tehran" />
             </Field>
             <Field label="claude binary">
               <Input value={v.claude_path ?? ""} onChange={(e) => up("claude_path", e.target.value)} />
@@ -214,13 +324,30 @@ export default function Settings() {
             label="Update Claude Code and Codex automatically"
             hint="Only when no session is running; retried every 15 minutes until idle"
           />
-          <Field label="Daily update hour (0–23, panel timezone)">
-            <Input type="number" min={0} max={23} value={v.update_hour ?? ""} onChange={(e) => up("update_hour", e.target.value)} className="w-28" />
+          <Field label="Daily update time (panel timezone)">
+            <Select
+              className="w-40"
+              value={String(Number(v.update_hour ?? 5))}
+              onChange={(h) => up("update_hour", h)}
+              aria-label="Daily update hour"
+              options={Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: `${String(h).padStart(2, "0")}:00` }))}
+            />
           </Field>
           <Toggle checked={bool("app_auto_update")} onChange={(b) => up("app_auto_update", b ? "1" : "0")} label="Update cloud-ai itself from GitHub releases" />
           <Field label="Release repository">
             <Input value={v.app_update_repo ?? ""} onChange={(e) => up("app_update_repo", e.target.value)} />
           </Field>
+        </Card>
+
+        <Card className="p-5 space-y-4">
+          <div>
+            <div className="font-medium">Usage prices</div>
+            <div className="text-xs text-muted mt-0.5">
+              Used on the Usage page to estimate the cost of runs whose CLI reports no price (Codex). Claude Code reports its own cost. Prices are USD per 1M tokens; the first row whose
+              model pattern matches wins, and <code>*</code> matches anything.
+            </div>
+          </div>
+          <PriceTable value={v.usage_prices ?? ""} onChange={(s) => up("usage_prices", s)} />
         </Card>
 
         <Card className="p-5 space-y-4">
@@ -230,7 +357,7 @@ export default function Settings() {
               <Input value={v.browser_path ?? ""} onChange={(e) => up("browser_path", e.target.value)} />
             </Field>
             <Field label="Close the browser after idle (minutes)">
-              <Input type="number" min={1} value={v.browser_idle_minutes ?? ""} onChange={(e) => up("browser_idle_minutes", e.target.value)} />
+              <NumberInput min={1} value={v.browser_idle_minutes ?? ""} onChange={(x) => up("browser_idle_minutes", x)} suffix="min" />
             </Field>
           </div>
         </Card>

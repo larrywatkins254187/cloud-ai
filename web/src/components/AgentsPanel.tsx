@@ -1,4 +1,4 @@
-import { Bot, CheckCircle2, ChevronRight, CircleSlash, Loader2, Square, X, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, ChevronRight, CircleSlash, Loader2, Square, SquareTerminal, X, XCircle } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { AgentProgress, AgentStatus, SubAgent } from "../lib/agents";
 import { api } from "../lib/api";
@@ -127,6 +127,11 @@ export function AgentsPanel({
   onFocus,
   onClose,
   renderSteps,
+  tab = "agents",
+  onTab,
+  bgCount = 0,
+  bgRunning = 0,
+  background,
 }: {
   chatId: number;
   agents: SubAgent[];
@@ -135,6 +140,12 @@ export function AgentsPanel({
   onFocus: (ref: string | null) => void;
   onClose: () => void;
   renderSteps: (msgs: Msg[]) => React.ReactNode;
+  /** With `onTab`, the panel also has a Background tab showing `background`. */
+  tab?: "agents" | "background";
+  onTab?: (t: "agents" | "background") => void;
+  bgCount?: number;
+  bgRunning?: number;
+  background?: React.ReactNode;
 }) {
   const running = agents.filter((a) => a.status === "running").length;
   useTick(running > 0);
@@ -143,17 +154,51 @@ export function AgentsPanel({
   const list = [...agents].reverse().sort((a, b) => Number(b.status === "running") - Number(a.status === "running"));
   return (
     <div className="flex flex-col h-full min-h-0 bg-bg">
-      <div className="flex items-center gap-2 px-3 h-12 border-b border-border shrink-0">
-        <Bot className="size-4 text-muted" />
-        <div className="text-sm font-medium flex-1">
-          Sub-agents <span className="text-muted font-normal">· {running > 0 ? `${running} running · ` : ""}{agents.length} total</span>
-        </div>
+      <div className="flex items-center gap-1 px-2 h-12 border-b border-border shrink-0">
+        {onTab ? (
+          <div role="tablist" className="flex-1 flex items-center gap-1 min-w-0">
+            {(
+              [
+                { id: "agents", label: "Sub-agents", icon: <Bot className="size-4" />, n: agents.length, r: running },
+                { id: "background", label: "Background", icon: <SquareTerminal className="size-4" />, n: bgCount, r: bgRunning },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={tab === t.id}
+                onClick={() => onTab(t.id)}
+                className={cx(
+                  "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[13px] whitespace-nowrap",
+                  tab === t.id ? "bg-panel-2 text-text font-medium" : "text-muted hover:text-text",
+                )}
+              >
+                {t.icon}
+                {t.label}
+                {t.n > 0 && (
+                  <span className={cx("text-[11px] tabular-nums rounded-md px-1", t.r > 0 ? "bg-accent-soft text-accent" : "bg-panel-2 text-muted")}>
+                    {t.r > 0 ? `${t.r}/${t.n}` : t.n}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <>
+            <Bot className="size-4 text-muted ml-1" />
+            <div className="text-sm font-medium flex-1 ml-1">
+              Sub-agents <span className="text-muted font-normal">· {running > 0 ? `${running} running · ` : ""}{agents.length} total</span>
+            </div>
+          </>
+        )}
         <IconButton title="Close" onClick={onClose}>
           <X className="size-4" />
         </IconButton>
       </div>
       <div className="flex-1 overflow-y-auto scroll-thin p-3 space-y-2">
-        {list.length === 0 ? (
+        {onTab && tab === "background" ? (
+          background
+        ) : list.length === 0 ? (
           <div className="text-center text-sm text-muted py-10 px-4">
             No sub-agents in this chat yet. When Claude or Codex hands work to a sub-agent, it shows up here with its live status and steps.
           </div>

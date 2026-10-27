@@ -421,3 +421,103 @@ pub async fn pending(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<J
         .collect::<Result<_, _>>()?;
     Ok(Json(Value::Array(rows)))
 }
+
+// ---------- background shells and monitors ----------
+
+/// The latest stored state of a background task of this chat (merged from its "shell" messages).
+fn shell_state(st: &St, chat_id: i64, task_id: &str) -> ApiResult<Value> {
+    if !crate::background::valid_task_id(task_id) {
+        return Err(ApiError::not_found());
+    }
+    let rows: Vec<String> = {
+        let c = st.db.conn();
+        let mut q = c.prepare("SELECT data FROM messages WHERE chat_id=?1 AND kind='shell' AND json_extract(data,'$.task_id')=?2 ORDER BY id")?;
+        let v = q.query_map(params![chat_id, task_id], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        v
+    };
+    if rows.is_empty() {
+        return Err(ApiError::not_found());
+    }
+    let mut state = serde_json::Map::new();
+    for r in rows {
+        if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(&r) {
+            for (k, v) in o {
+                if !v.is_null() {
+                    state.insert(k, v);
+                }
+            }
+        }
+    }
+    Ok(Value::Object(state))
+}
+
+/// Which background tasks the chat's Claude process is still running.
+pub async fn background(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    chat_for(&st, &u, id)?;
+    let s = st.runner.claude.lock().unwrap().get(&id).cloned();
+    let alive = s.as_ref().map(|s| s.is_alive()).unwrap_or(false);
+    let running: Vec<String> = s.map(|s| s.running_background()).unwrap_or_default();
+    Ok(Json(json!({"alive": alive, "running": running})))
+}
+
+#[derive(Deserialize)]
+pub struct TailQuery {
+    tail: Option<u64>,
+}
+
+pub async fn background_output(
+    State(st): State<St>,
+    AuthUser(u): AuthUser,
+    Path((id, task_id)): Path<(i64, String)>,
+    axum::extract::Query(q): axum::extract::Query<TailQuery>,
+) -> ApiResult<Json<Value>> {
+    chat_for(&st, &u, id)?;
+    let state = shell_state(&st, id, &task_id)?;
+    let max = q.tail.unwrap_or(64 * 1024).clamp(1024, 2 * 1024 * 1024);
+    let path = crate::background::output_path(&task_id, state["output_file"].as_str());
+    match path {
+        Some(p) => {
+            let (text, size, truncated) = crate::background::read_tail(&p, max).map_err(|e| ApiError::bad(e.to_string()))?;
+            Ok(Json(json!({"output": text, "size": size, "truncated": truncated, "found": true})))
+        }
+        None => Ok(Json(json!({"output": "", "size": 0, "truncated": false, "found": false}))),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct StopBgBody {
+    #[serde(default)]
+    force: bool,
+}
+
+/// Stop asks Claude Code to end the task; force kills its processes right away.
+pub async fn background_stop(
+    State(st): State<St>,
+    AuthUser(u): AuthUser,
+    Path((id, task_id)): Path<(i64, String)>,
+    Json(b): Json<StopBgBody>,
+) -> ApiResult<Json<Value>> {
+    chat_for(&st, &u, id)?;
+    let state = shell_state(&st, id, &task_id)?;
+    let s = st.runner.claude.lock().unwrap().get(&id).cloned().filter(|s| s.is_alive());
+    let live = s.as_ref().and_then(|s| s.background_task(&task_id));
+    if !b.force {
+        if let (Some(s), Some(t)) = (&s, &live) {
+            if t.running {
+                s.stop_task_id(&task_id);
+                return Ok(Json(json!({"ok": true, "action": "stop"})));
+            }
+        }
+    }
+    let command = live.as_ref().map(|t| t.command.clone()).or_else(|| state["command"].as_str().map(String::from)).unwrap_or_default();
+    let out = crate::background::output_path(&task_id, live.as_ref().and_then(|t| t.output_file.clone()).as_deref().or(state["output_file"].as_str()));
+    let pid = s.as_ref().and_then(|s| s.pid());
+    let killed = crate::background::kill_task(pid, &command, out.as_deref());
+    if s.is_none() && state["status"] == "running" {
+        // No Claude process left to report the end: record it here.
+        let chat = get_chat(&st.db, id)?;
+        let m = store::insert_message(&st.db, id, None, "shell", &json!({"task_id": task_id, "status": "stopped", "summary": "Killed from the panel"}))?;
+        st.emit_project(chat.project_id, crate::events::Event::Message { message: m });
+    }
+    Ok(Json(json!({"ok": true, "action": "kill", "killed": killed})))
+}

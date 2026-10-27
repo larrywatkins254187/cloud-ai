@@ -212,6 +212,41 @@ CREATE INDEX IF NOT EXISTS chats_topic ON chats(tg_topic_id);
 CREATE INDEX IF NOT EXISTS chats_updated ON chats(archived, updated_at);
 CREATE INDEX IF NOT EXISTS schedules_project ON schedules(project_id);
 "#,
+    // v4: token usage per run and model, for the Usage page. It keeps its own copy of
+    // project/user/chat ids (no cascade) so history survives deleting a chat or project.
+    r#"
+CREATE TABLE run_usage(
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER NOT NULL,
+  chat_id INTEGER NOT NULL,
+  project_id INTEGER NOT NULL,
+  user_id INTEGER,
+  author TEXT,
+  schedule_id INTEGER,
+  source TEXT NOT NULL DEFAULT '',
+  tool TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+  web_search_requests INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL,
+  legacy INTEGER NOT NULL DEFAULT 0,
+  at TEXT NOT NULL
+);
+CREATE INDEX run_usage_at ON run_usage(at);
+CREATE INDEX run_usage_run ON run_usage(run_id);
+INSERT INTO run_usage(run_id,chat_id,project_id,user_id,author,schedule_id,source,tool,model,input_tokens,output_tokens,cost_usd,legacy,at)
+  SELECT r.id, r.chat_id, c.project_id, r.user_id, r.author, r.schedule_id, r.source, c.tool,
+         CASE WHEN c.model='' THEN 'default' ELSE c.model END,
+         COALESCE(r.input_tokens,0), COALESCE(r.output_tokens,0),
+         CASE WHEN c.tool='codex' THEN NULL ELSE r.cost_usd END, 1,
+         COALESCE(r.finished_at, r.started_at, r.created_at)
+  FROM runs r JOIN chats c ON c.id=r.chat_id
+  WHERE COALESCE(r.input_tokens,0) + COALESCE(r.output_tokens,0) > 0 OR COALESCE(r.cost_usd,0) > 0;
+"#,
 ];
 
 impl Db {
