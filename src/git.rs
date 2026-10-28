@@ -5,6 +5,9 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// git's well-known empty tree object, used as the base of a repo with no commits.
+pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 pub struct Output {
     pub ok: bool,
     pub stdout: String,

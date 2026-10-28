@@ -171,6 +171,8 @@ async fn dispatch(st: &St) -> Result<()> {
     };
     for (run_id, chat_id, tool) in queued {
         if busy.contains(&chat_id) {
+            // The running prompt may only be waiting for background work: a follow-up ends that wait.
+            release_waiting(st, chat_id, &tool, Some("A new prompt was sent, so this one stopped waiting for its background tasks")).await;
             continue;
         }
         let max = settings::get_i64(&st.db, if tool == "codex" { "max_codex" } else { "max_claude" }).max(1);
@@ -263,6 +265,12 @@ async fn execute(st: &St, run_id: i64) -> Result<()> {
             out
         }
     };
+    if chat.tool != "codex" {
+        let session = st.runner.claude.lock().unwrap().get(&chat.id).cloned();
+        if let Some(s) = session {
+            refresh_claude_context(st, &s, chat.id, chat.project_id);
+        }
+    }
     finish(st, run_id, outcome)
 }
 
@@ -481,6 +489,9 @@ pub async fn cancel_run(st: &St, run_id: i64) -> Result<()> {
             for id in pending {
                 let _ = answer(st, id, json!({ "allow": false, "message": "Stopped by user" }), "system");
             }
+            if release_waiting(st, chat.id, &chat.tool, Some("Stopped waiting for background tasks")).await {
+                return Ok(());
+            }
             if chat.tool == "codex" {
                 st.codex.interrupt(chat.id).await;
             } else {
@@ -519,6 +530,37 @@ pub async fn stop_agent(st: &St, chat_id: i64, tool_use_id: &str) -> Result<&'st
         cancel_run(st, r).await?;
     }
     Ok("turn")
+}
+
+/// Read how full Claude's context window is now and save it for the chat page.
+pub fn refresh_claude_context(st: &St, session: &Arc<ClaudeSession>, chat_id: i64, project_id: i64) {
+    let (s, st) = (session.clone(), st.clone());
+    tokio::spawn(async move {
+        if let Some(v) = s.context_usage().await {
+            crate::agents::save_context(&st, chat_id, project_id, crate::agents::claude_context(&v));
+        }
+    });
+}
+
+/// Finish a prompt that only waits for its background sub-agents or shell
+/// commands. Returns false when the chat's prompt was not waiting.
+pub async fn release_waiting(st: &St, chat_id: i64, tool: &str, note: Option<&str>) -> bool {
+    if tool == "codex" {
+        st.codex.release(st, chat_id, note).await
+    } else {
+        let s = st.runner.claude.lock().unwrap().get(&chat_id).cloned();
+        s.map(|s| s.release(st, note)).unwrap_or(false)
+    }
+}
+
+/// True while the chat's running prompt only waits for background work.
+pub async fn is_waiting(st: &St, chat_id: i64, tool: &str) -> bool {
+    if tool == "codex" {
+        st.codex.is_waiting(chat_id).await
+    } else {
+        let s = st.runner.claude.lock().unwrap().get(&chat_id).cloned();
+        s.map(|s| s.is_waiting()).unwrap_or(false)
+    }
 }
 
 /// Kill the agent process of a chat (used when settings change or the chat is deleted).

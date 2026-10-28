@@ -17,6 +17,8 @@ pub struct NewChat {
     pub worktree: bool,
     pub auto_deploy: bool,
     pub schedule_id: Option<i64>,
+    /// The agent may read but not change anything: no worktree, branch or deploy.
+    pub read_only: bool,
 }
 
 /// Chat title from the first line of a prompt.
@@ -43,16 +45,20 @@ pub fn validate_mode(mode: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn create_chat(st: &St, n: NewChat) -> Result<Chat> {
+pub fn create_chat(st: &St, mut n: NewChat) -> Result<Chat> {
     validate_tool(&n.tool)?;
+    if n.read_only {
+        n.worktree = false;
+        n.auto_deploy = false;
+    }
     validate_mode(&n.permission_mode)?;
     let project = get_project(&st.db, n.project_id)?;
     let title = if n.title.trim().is_empty() { "New chat".to_string() } else { n.title.trim().to_string() };
     let id = {
         let c = st.db.conn();
         c.execute(
-            "INSERT INTO chats(project_id,user_id,title,tool,model,effort,permission_mode,cwd,auto_deploy,schedule_id,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)",
+            "INSERT INTO chats(project_id,user_id,title,tool,model,effort,permission_mode,cwd,auto_deploy,schedule_id,created_at,updated_at,read_only)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12)",
             params![
                 n.project_id,
                 n.user_id,
@@ -64,7 +70,8 @@ pub fn create_chat(st: &St, n: NewChat) -> Result<Chat> {
                 project.path,
                 n.auto_deploy as i64,
                 n.schedule_id,
-                now()
+                now(),
+                n.read_only as i64
             ],
         )?;
         c.last_insert_rowid()
@@ -86,6 +93,21 @@ pub fn create_chat(st: &St, n: NewChat) -> Result<Chat> {
             "UPDATE chats SET cwd=?2, worktree_branch=?3 WHERE id=?1",
             params![id, dir.to_string_lossy(), branch],
         )?;
+    }
+    // Remember where the chat started, so its changed files can be listed later.
+    let dir = get_chat(&st.db, id)?.cwd;
+    if let Ok(o) = std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&dir).output() {
+        let sha = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        let base = if o.status.success() && !sha.is_empty() {
+            Some(sha)
+        } else {
+            // A repo without commits yet: compare with the empty tree.
+            let is_repo = std::process::Command::new("git").args(["rev-parse", "--git-dir"]).current_dir(&dir).output().map(|o| o.status.success()).unwrap_or(false);
+            is_repo.then(|| crate::git::EMPTY_TREE.to_string())
+        };
+        if let Some(b) = base {
+            st.db.conn().execute("UPDATE chats SET base_sha=?2 WHERE id=?1", params![id, b])?;
+        }
     }
     let chat = get_chat(&st.db, id)?;
     st.emit_project(chat.project_id, Event::ChatCreated { chat: chat.clone() });

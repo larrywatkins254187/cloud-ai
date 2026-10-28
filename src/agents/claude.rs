@@ -23,6 +23,12 @@ struct Turn {
     run_id: i64,
     done: Option<oneshot::Sender<TurnOutcome>>,
     last_text: String,
+    /// Claude ended its turn while background work (sub-agents, shell commands) it
+    /// started was still running. The prompt is not finished yet: Claude continues
+    /// on its own when that work ends. Holds the latest `result` message until then.
+    pending_result: Option<Value>,
+    /// Bumped on every new wait, so stale wait timers do nothing.
+    wait_seq: u64,
 }
 
 pub struct ClaudeSession {
@@ -50,6 +56,13 @@ pub struct ClaudeSession {
     bg_calls: Mutex<HashMap<String, (String, String, String)>>,
     /// Background shells and monitors of this process: task id → info.
     bg: Mutex<HashMap<String, BgTask>>,
+    /// Task ids of sub-agents running in the background.
+    async_agents: Mutex<std::collections::HashSet<String>>,
+    /// When the process last printed anything.
+    last_output: Mutex<Instant>,
+    /// Context window usage (`get_context_usage`) requests waiting for their answer.
+    ctx_waiters: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    read_only: bool,
 }
 
 /// A background shell command or monitor started by Claude Code.
@@ -58,6 +71,8 @@ pub struct BgTask {
     pub command: String,
     pub running: bool,
     pub output_file: Option<String>,
+    /// Monitors watch something open-ended, so a prompt never waits for them.
+    pub monitor: bool,
 }
 
 #[derive(Default)]
@@ -99,8 +114,14 @@ fn task_status(s: &str) -> &'static str {
 }
 
 fn spawn_key(chat: &Chat) -> String {
-    format!("{}|{}|{}|{}", chat.model, chat.effort, chat.permission_mode, chat.cwd)
+    format!("{}|{}|{}|{}|{}", chat.model, chat.effort, chat.permission_mode, chat.cwd, chat.read_only)
 }
+
+/// Tools a read-only chat may use without asking. Everything else is refused.
+const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoWrite", "Task", "Agent", "ToolSearch", "BashOutput", "TaskOutput"];
+
+/// Tools a read-only chat cannot use at all.
+pub const READ_ONLY_DISALLOWED: &str = "Edit Write MultiEdit NotebookEdit ExitPlanMode";
 
 impl ClaudeSession {
     pub fn is_alive(&self) -> bool {
@@ -127,6 +148,7 @@ impl ClaudeSession {
 
     /// The process ended: its background tasks are gone too (kill any survivors).
     fn end_background(&self, st: &St) {
+        self.async_agents.lock().unwrap().clear();
         let running: Vec<(String, BgTask)> = self.bg.lock().unwrap().iter().filter(|(_, t)| t.running).map(|(k, t)| (k.clone(), t.clone())).collect();
         for (task_id, t) in running {
             let out = crate::background::output_path(&task_id, t.output_file.as_deref());
@@ -138,6 +160,60 @@ impl ClaudeSession {
     /// True while a background shell or monitor of this process is running.
     pub fn has_background(&self) -> bool {
         self.bg.lock().unwrap().values().any(|t| t.running)
+    }
+
+    /// Background work this prompt still waits for: sub-agents and shell commands (not monitors).
+    fn pending_background(&self) -> usize {
+        let shells = self.bg.lock().unwrap().values().filter(|t| t.running && !t.monitor).count();
+        shells + self.async_agents.lock().unwrap().len()
+    }
+
+    /// True while the current prompt only waits for background work.
+    pub fn is_waiting(&self) -> bool {
+        self.turn.lock().unwrap().as_ref().map(|t| t.pending_result.is_some()).unwrap_or(false)
+    }
+
+    /// Stop waiting for background work and finish the prompt now (a follow-up was
+    /// sent, the user pressed stop, or the wait limit passed). Returns false when
+    /// the prompt was not waiting.
+    pub fn release(&self, st: &St, note: Option<&str>) -> bool {
+        let pending = {
+            let mut t = self.turn.lock().unwrap();
+            t.as_mut().and_then(|t| t.pending_result.take())
+        };
+        let Some(v) = pending else { return false };
+        if let Some(n) = note {
+            self.store(st, "system", json!({"text": n}));
+        }
+        self.complete_turn(&v);
+        true
+    }
+
+    /// Background work ended. If the prompt was waiting for it and Claude does not
+    /// start a new turn by itself shortly, finish the prompt.
+    fn background_changed(self: &Arc<Self>, st: &St) {
+        if self.pending_background() > 0 {
+            return;
+        }
+        let seq = match self.turn.lock().unwrap().as_ref() {
+            Some(t) if t.pending_result.is_some() => t.wait_seq,
+            _ => return,
+        };
+        let s = self.clone();
+        let st = st.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                let still = matches!(s.turn.lock().unwrap().as_ref(), Some(t) if t.pending_result.is_some() && t.wait_seq == seq);
+                if !still || !s.is_alive() || s.pending_background() > 0 {
+                    return;
+                }
+                if s.last_output.lock().unwrap().elapsed() >= Duration::from_secs(15) {
+                    s.release(&st, None);
+                    return;
+                }
+            }
+        });
     }
 
     pub fn running_background(&self) -> Vec<String> {
@@ -187,6 +263,20 @@ impl ClaudeSession {
         let id = format!("stop-{}", self.ctrl_seq.fetch_add(1, Ordering::SeqCst));
         self.send(json!({"type":"control_request","request_id": id, "request": {"subtype":"stop_task","task_id": task_id}}));
         true
+    }
+
+    /// Ask Claude Code how its context window is used (the same data as `/context`).
+    pub async fn context_usage(&self) -> Option<Value> {
+        if !self.is_alive() {
+            return None;
+        }
+        let id = format!("ctx-{}", self.ctrl_seq.fetch_add(1, Ordering::SeqCst));
+        let (tx, rx) = oneshot::channel();
+        self.ctx_waiters.lock().unwrap().insert(id.clone(), tx);
+        self.send(json!({"type":"control_request","request_id": id, "request": {"subtype":"get_context_usage"}}));
+        let r = tokio::time::timeout(Duration::from_secs(20), rx).await;
+        self.ctx_waiters.lock().unwrap().remove(&id);
+        r.ok().and_then(|r| r.ok()).filter(|v| !v.is_null())
     }
 
     pub fn interrupt(&self) {
@@ -245,7 +335,16 @@ impl ClaudeSession {
                 args.push(sid);
             }
         }
-        let sys = system_prompt(st, project);
+        let mut sys = system_prompt(st, project);
+        if chat.read_only {
+            // "default" asks before anything that changes state; those requests are refused below.
+            if let Some(i) = args.iter().position(|a| a == "--permission-mode") {
+                args[i + 1] = "default".into();
+            }
+            args.push("--disallowedTools".into());
+            args.push(READ_ONLY_DISALLOWED.into());
+            sys = format!("{}{}{}", super::READ_ONLY_PROMPT, if sys.is_empty() { "" } else { "\n\n" }, sys);
+        }
         if !sys.is_empty() {
             args.push("--append-system-prompt".into());
             args.push(sys);
@@ -283,6 +382,10 @@ impl ClaudeSession {
             pid: child_pid,
             bg_calls: Mutex::new(HashMap::new()),
             bg: Mutex::new(HashMap::new()),
+            async_agents: Mutex::new(Default::default()),
+            last_output: Mutex::new(Instant::now()),
+            ctx_waiters: Mutex::new(HashMap::new()),
+            read_only: chat.read_only,
             ctrl_seq: AtomicU64::new(1),
         });
 
@@ -317,6 +420,7 @@ impl ClaudeSession {
                     if line.trim().is_empty() {
                         continue;
                     }
+                    *s.last_output.lock().unwrap() = Instant::now();
                     match serde_json::from_str::<Value>(&line) {
                         Ok(v) => s.handle(&st, v),
                         Err(_) => tracing::debug!("claude non-json: {}", truncate(&line, 200)),
@@ -357,7 +461,7 @@ impl ClaudeSession {
             if t.is_some() {
                 return TurnOutcome::error("a turn is already running in this chat");
             }
-            *t = Some(Turn { run_id: run.id, done: Some(tx), last_text: String::new() });
+            *t = Some(Turn { run_id: run.id, done: Some(tx), last_text: String::new(), pending_result: None, wait_seq: 0 });
         }
         *self.last_used.lock().unwrap() = Instant::now();
         let mut content = vec![json!({"type":"text","text": prompt_with_attachments(&run.prompt, atts)})];
@@ -434,6 +538,51 @@ impl ClaudeSession {
         }
     }
 
+    /// Finish the current prompt with Claude's `result` message.
+    fn complete_turn(&self, v: &Value) {
+        let total = v["total_cost_usd"].as_f64().unwrap_or(0.0);
+        let cost = {
+            let mut prev = self.total_cost.lock().unwrap();
+            let c = (total - *prev).max(0.0);
+            *prev = total;
+            c
+        };
+        let u = &v["usage"];
+        let input = u["input_tokens"].as_i64().unwrap_or(0)
+            + u["cache_creation_input_tokens"].as_i64().unwrap_or(0)
+            + u["cache_read_input_tokens"].as_i64().unwrap_or(0);
+        let output = u["output_tokens"].as_i64().unwrap_or(0);
+        let usage = self.turn_usage(v, cost);
+        let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"] != "success";
+        let turn = self.turn.lock().unwrap().take();
+        if let Some(mut t) = turn {
+            let result_text = v["result"].as_str().filter(|s| !s.trim().is_empty()).map(|s| s.to_string()).or(Some(t.last_text.clone()));
+            let outcome = TurnOutcome {
+                status: if is_error { "error".into() } else { "done".into() },
+                error: if is_error {
+                    Some(
+                        v["result"]
+                            .as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("Stopped: {}", v["subtype"].as_str().unwrap_or("error"))),
+                    )
+                } else {
+                    None
+                },
+                result_text,
+                cost_usd: Some(cost),
+                input_tokens: input,
+                output_tokens: output,
+                usage,
+            };
+            if let Some(done) = t.done.take() {
+                let _ = done.send(outcome);
+            }
+        }
+        *self.last_used.lock().unwrap() = Instant::now();
+    }
+
     fn handle(self: &Arc<Self>, st: &St, v: Value) {
         let parent = v.get("parent_tool_use_id").cloned().unwrap_or(Value::Null);
         match v["type"].as_str().unwrap_or("") {
@@ -451,7 +600,7 @@ impl ClaudeSession {
                     let task_id = v["task_id"].as_str().unwrap_or("");
                     let r = v["tool_use_id"].as_str().unwrap_or("");
                     let (tool, command, description) = self.bg_calls.lock().unwrap().remove(r).unwrap_or_default();
-                    self.bg.lock().unwrap().insert(task_id.to_string(), BgTask { command: command.clone(), running: true, output_file: None });
+                    self.bg.lock().unwrap().insert(task_id.to_string(), BgTask { command: command.clone(), running: true, output_file: None, monitor: tool == "Monitor" });
                     self.store(
                         st,
                         "shell",
@@ -466,10 +615,14 @@ impl ClaudeSession {
                 "task_updated" => {
                     let task_id = v["task_id"].as_str().unwrap_or("");
                     if let Some(s) = v["patch"]["status"].as_str() {
-                        if task_status(s) != "running" && self.bg.lock().unwrap().contains_key(task_id) {
-                            self.bg_finished(st, task_id, task_status(s), &Value::Null, None);
+                        if task_status(s) != "running" {
+                            if self.bg.lock().unwrap().contains_key(task_id) {
+                                self.bg_finished(st, task_id, task_status(s), &Value::Null, None);
+                            }
+                            self.async_agents.lock().unwrap().remove(task_id);
                         }
                     }
+                    self.background_changed(st);
                 }
                 "task_started" => {
                     let task_id = v["task_id"].as_str().unwrap_or("");
@@ -494,15 +647,20 @@ impl ClaudeSession {
                 "task_notification" if self.bg.lock().unwrap().contains_key(v["task_id"].as_str().unwrap_or("")) => {
                     let task_id = v["task_id"].as_str().unwrap_or("");
                     self.bg_finished(st, task_id, task_status(v["status"].as_str().unwrap_or("")), &v["summary"], v["output_file"].as_str());
+                    self.background_changed(st);
                 }
                 "task_notification" => {
                     let task_id = v["task_id"].as_str().unwrap_or("");
+                    if task_status(v["status"].as_str().unwrap_or("")) != "running" {
+                        self.async_agents.lock().unwrap().remove(task_id);
+                    }
                     let r = v["tool_use_id"].as_str().map(String::from).or_else(|| self.tasks.lock().unwrap().by_task.get(task_id).cloned());
                     self.store(
                         st,
                         "agent",
                         json!({"ref": r, "task_id": task_id, "status": task_status(v["status"].as_str().unwrap_or("")), "summary": v["summary"]}),
                     );
+                    self.background_changed(st);
                 }
                 _ => {}
             },
@@ -591,6 +749,7 @@ impl ClaudeSession {
                                 if let (Some(r), Some(aid)) = (b["tool_use_id"].as_str(), agent_id_in(&output)) {
                                     self.tasks.lock().unwrap().link(r, aid);
                                     if output.contains("Async agent launched") {
+                                        self.async_agents.lock().unwrap().insert(aid.to_string());
                                         launched = Some(json!({"ref": r, "task_id": aid, "status": "running", "background": true}));
                                     }
                                 }
@@ -620,19 +779,6 @@ impl ClaudeSession {
                     *self.last_used.lock().unwrap() = Instant::now();
                     return;
                 }
-                let total = v["total_cost_usd"].as_f64().unwrap_or(0.0);
-                let cost = {
-                    let mut prev = self.total_cost.lock().unwrap();
-                    let c = (total - *prev).max(0.0);
-                    *prev = total;
-                    c
-                };
-                let u = &v["usage"];
-                let input = u["input_tokens"].as_i64().unwrap_or(0)
-                    + u["cache_creation_input_tokens"].as_i64().unwrap_or(0)
-                    + u["cache_read_input_tokens"].as_i64().unwrap_or(0);
-                let output = u["output_tokens"].as_i64().unwrap_or(0);
-                let usage = self.turn_usage(&v, cost);
                 let is_error = v["is_error"].as_bool().unwrap_or(false) || v["subtype"] != "success";
                 if is_error && v["num_turns"].as_i64() == Some(0) && v["result"].as_str().unwrap_or("").is_empty() {
                     // Failed before doing anything (e.g. the session to resume is gone): the reason
@@ -652,36 +798,52 @@ impl ClaudeSession {
                     });
                     return;
                 }
-                let turn = self.turn.lock().unwrap().take();
-                if let Some(mut t) = turn {
-                    let result_text = v["result"].as_str().map(|s| s.to_string()).or(Some(t.last_text.clone()));
-                    let outcome = TurnOutcome {
-                        status: if is_error { "error".into() } else { "done".into() },
-                        error: if is_error {
-                            Some(
-                                v["result"]
-                                    .as_str()
-                                    .filter(|s| !s.is_empty())
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("Stopped: {}", v["subtype"].as_str().unwrap_or("error"))),
-                            )
-                        } else {
-                            None
-                        },
-                        result_text,
-                        cost_usd: Some(cost),
-                        input_tokens: input,
-                        output_tokens: output,
-                        usage,
+                let waiting_for = self.pending_background();
+                if !is_error && waiting_for > 0 {
+                    // Claude only paused: it continues when its background work reports back.
+                    let (seq, first) = {
+                        let mut g = self.turn.lock().unwrap();
+                        let t = g.as_mut().unwrap();
+                        if let Some(r) = v["result"].as_str().filter(|r| !r.trim().is_empty()) {
+                            t.last_text = r.to_string();
+                        }
+                        let first = t.pending_result.is_none();
+                        t.pending_result = Some(v.clone());
+                        t.wait_seq += 1;
+                        (t.wait_seq, first)
                     };
-                    if let Some(done) = t.done.take() {
-                        let _ = done.send(outcome);
+                    self.delta(st, "activity", &format!("Waiting for {waiting_for} background task{} to finish…", if waiting_for == 1 { "" } else { "s" }));
+                    if first {
+                        self.store(st, "system", json!({"text": format!("Waiting for {waiting_for} background task{} before this prompt is done", if waiting_for == 1 { "" } else { "s" })}));
                     }
+                    let limit = settings::get_i64(&st.db, "background_wait_minutes").max(1) as u64;
+                    let s = self.clone();
+                    let st2 = st.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(limit * 60)).await;
+                        let same = matches!(s.turn.lock().unwrap().as_ref(), Some(t) if t.pending_result.is_some() && t.wait_seq == seq);
+                        if same {
+                            s.release(&st2, Some(&format!("Stopped waiting for background tasks after {limit} minutes")));
+                        }
+                    });
+                    // The work may have ended between Claude's last step and this result.
+                    self.background_changed(st);
+                    return;
                 }
-                *self.last_used.lock().unwrap() = Instant::now();
+                if let Some(t) = self.turn.lock().unwrap().as_mut() {
+                    t.pending_result = None;
+                }
+                self.complete_turn(&v);
             }
             "rate_limit_event" => {
                 crate::runner::set_rate_limits(st, "claude", v["rate_limit_info"].clone());
+            }
+            "control_response" => {
+                let id = v["response"]["request_id"].as_str().unwrap_or("");
+                if let Some(tx) = self.ctx_waiters.lock().unwrap().remove(id) {
+                    let r = if v["response"]["subtype"] == "success" { v["response"]["response"].clone() } else { Value::Null };
+                    let _ = tx.send(r);
+                }
             }
             "control_request" => {
                 let s = self.clone();
@@ -750,6 +912,18 @@ impl ClaudeSession {
             let mut updated = input.clone();
             updated["answers"] = Value::Object(answers);
             self.send(reply(json!({"behavior":"allow","updatedInput": updated})));
+            return;
+        }
+        let safe_shell = tool == "Bash" && input["command"].as_str().map(super::is_read_only_command).unwrap_or(false);
+        if self.read_only && safe_shell {
+            self.send(reply(json!({"behavior":"allow","updatedInput": input})));
+            return;
+        }
+        if self.read_only && !READ_ONLY_TOOLS.contains(&tool.as_str()) {
+            self.send(reply(json!({
+                "behavior": "deny",
+                "message": "This chat is read-only: changing files or running commands that change anything is not allowed. Use read-only tools and commands, and describe the changes instead of making them."
+            })));
             return;
         }
         let summary = match tool.as_str() {

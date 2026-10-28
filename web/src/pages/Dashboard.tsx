@@ -139,6 +139,7 @@ export function ChatRow({ c, showProject }: { c: Chat & { project_name?: string 
       </div>
       {c.status === "waiting" && <Badge tone="warn">needs answer</Badge>}
       {c.status === "error" && <Badge tone="danger">error</Badge>}
+      {c.read_only && <Badge>read-only</Badge>}
       {c.schedule_id && <Badge>scheduled</Badge>}
     </Link>
   );

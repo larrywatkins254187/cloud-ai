@@ -50,6 +50,18 @@ function setAgentProgress(chatId: number, p: AgentProgress) {
   progressSubs.forEach((f) => f());
 }
 
+const changeTimers = new Map<number, ReturnType<typeof setTimeout>>();
+function refreshChangesSoon(qc: QueryClient, chatId: number) {
+  if (changeTimers.has(chatId)) return;
+  changeTimers.set(
+    chatId,
+    setTimeout(() => {
+      changeTimers.delete(chatId);
+      qc.invalidateQueries({ queryKey: ["changes", chatId] });
+    }, 2500),
+  );
+}
+
 function upsertRequest(qc: QueryClient, r: Req) {
   qc.setQueryData<MessagesData>(["messages", r.chat_id], (d) => {
     if (!d) return d;
@@ -80,6 +92,8 @@ function handle(qc: QueryClient, ev: ServerEvent) {
         d && !d.messages.some((x) => x.id === m.id) ? { ...d, messages: [...d.messages, m] } : d,
       );
       if (m.kind === "assistant" && !m.data?.parent) setStream(m.chat_id, null);
+      // A finished edit or command may have changed files: refresh the Files tab (debounced).
+      if (m.kind === "tool_result") refreshChangesSoon(qc, m.chat_id);
       else if (m.kind === "thinking") {
         const s = streams.get(m.chat_id);
         if (s) setStream(m.chat_id, { ...s, thinking: "" });
@@ -102,10 +116,17 @@ function handle(qc: QueryClient, ev: ServerEvent) {
       setStream(e.chat_id, { ...s });
       break;
     }
+    case "chat_context":
+      qc.setQueryData(["context", e.chat_id], (old: any) => ({ live: old?.live ?? true, context: e.context }));
+      break;
     case "run_queued":
     case "run_started":
     case "run_finished":
-      if (e.type === "run_finished") setStream(e.run.chat_id, null);
+      if (e.type === "run_finished") {
+        setStream(e.run.chat_id, null);
+        // The prompt may have changed files.
+        qc.invalidateQueries({ queryKey: ["changes", e.run.chat_id] });
+      }
       qc.invalidateQueries({ queryKey: ["chat", e.run.chat_id] });
       qc.invalidateQueries({ queryKey: ["queue"] });
       qc.invalidateQueries({ queryKey: ["system"] });

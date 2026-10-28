@@ -246,6 +246,12 @@ export default function Settings() {
             <Field label="Stop idle agent processes after (minutes)" hint="The conversation resumes automatically on the next prompt">
               <NumberInput min={1} value={v.idle_kill_minutes ?? ""} onChange={(x) => up("idle_kill_minutes", x)} suffix="min" />
             </Field>
+            <Field
+              label="Wait for background tasks up to (minutes)"
+              hint="A prompt is done only when its background sub-agents and shell commands finish, or after this long"
+            >
+              <NumberInput min={1} value={v.background_wait_minutes ?? ""} onChange={(x) => up("background_wait_minutes", x)} suffix="min" />
+            </Field>
           </div>
         </Card>
 

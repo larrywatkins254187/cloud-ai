@@ -97,6 +97,8 @@ pub struct CreateBody {
     worktree: bool,
     #[serde(default)]
     auto_deploy: bool,
+    #[serde(default)]
+    read_only: bool,
     prompt: Option<String>,
     #[serde(default)]
     attachments: Vec<i64>,
@@ -137,6 +139,7 @@ pub async fn create(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path
             worktree: b.worktree,
             auto_deploy: b.auto_deploy,
             schedule_id: None,
+            read_only: b.read_only,
         },
     )
     .map_err(|e| ApiError::bad(format!("{e:#}")))?;
@@ -168,7 +171,49 @@ pub async fn get_one(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path
     v["project"] = json!({"id": project.id, "name": project.name, "path": project.path, "deployable": project.deployable()});
     v["active_runs"] = json!(runs);
     v["pending_requests"] = json!(requests);
+    v["waiting_background"] = json!(runner::is_waiting(&st, chat.id, &chat.tool).await);
     Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+pub struct ContextQ {
+    #[serde(default)]
+    refresh: bool,
+}
+
+/// How full the chat's context window is: the saved snapshot, or a fresh one from
+/// the running Claude process with `?refresh=true`.
+pub async fn context(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>, Query(q): Query<ContextQ>) -> ApiResult<Json<Value>> {
+    let chat = chat_for(&st, &u, id)?;
+    let session = if chat.tool == "claude" { st.runner.claude.lock().unwrap().get(&id).cloned() } else { None };
+    if q.refresh {
+        if let Some(s) = &session {
+            if let Some(v) = s.context_usage().await {
+                let ctx = crate::agents::claude_context(&v);
+                crate::agents::save_context(&st, id, chat.project_id, ctx.clone());
+                return Ok(Json(json!({"context": ctx, "live": true})));
+            }
+        }
+    }
+    let live = session.map(|s| s.is_alive()).unwrap_or(false);
+    Ok(Json(json!({"context": crate::agents::load_context(&st, id), "live": live})))
+}
+
+/// Files this chat added, changed or deleted.
+pub async fn changes(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    let chat = chat_for(&st, &u, id)?;
+    Ok(Json(crate::changes::list(&st, &chat).await.map_err(|e| ApiError::bad(format!("{e:#}")))?))
+}
+
+#[derive(Deserialize)]
+pub struct DiffQ {
+    path: String,
+}
+
+pub async fn change_diff(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>, Query(q): Query<DiffQ>) -> ApiResult<Json<Value>> {
+    let chat = chat_for(&st, &u, id)?;
+    let d = crate::changes::diff(&st, &chat, &q.path).await.map_err(|e| ApiError::bad(format!("{e:#}")))?;
+    Ok(Json(json!({"diff": crate::util::truncate(&d, 1_000_000)})))
 }
 
 #[derive(Deserialize)]
@@ -185,6 +230,9 @@ pub async fn update(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<
     let chat = chat_for(&st, &u, id)?;
     if let Some(m) = &b.permission_mode {
         validate_mode(m).map_err(|e| ApiError::bad(e.to_string()))?;
+    }
+    if chat.read_only && b.auto_deploy == Some(true) {
+        return Err(ApiError::bad("read-only chats cannot deploy"));
     }
     {
         let c = st.db.conn();

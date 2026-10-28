@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Save, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
+import { DeployAssist } from "../../components/DeployAssist";
 import { FolderPicker } from "../../components/FolderPicker";
 import { ProjectFields, type ProjectDraft } from "../../components/ProjectForm";
 import { Button, Card, Field, useAction, useConfirm } from "../../components/ui";
@@ -20,6 +21,7 @@ export default function SettingsTab({ project }: { project: Project }) {
       qc.invalidateQueries({ queryKey: ["project", project.id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
     }
+    return !!r;
   };
   const remove = async () => {
     if (!(await ask({ title: "Remove project", message: `Remove ${project.name} from the panel? Its chats and schedules are deleted; files on disk are kept.`, confirmLabel: "Remove", danger: true }))) return;
@@ -30,6 +32,7 @@ export default function SettingsTab({ project }: { project: Project }) {
     }
   };
   return (
+    <div className="space-y-5">
     <Card className="p-5 space-y-5 max-w-3xl">
       <Field label="Folder">
         <FolderPicker value={v.path ?? ""} onChange={(path) => setV({ ...v, path })} />
@@ -44,5 +47,7 @@ export default function SettingsTab({ project }: { project: Project }) {
         </Button>
       </div>
     </Card>
+    {v.deploy_target && v.deploy_target !== "none" && <DeployAssist project={project} v={v} set={setV} save={save} />}
+    </div>
   );
 }

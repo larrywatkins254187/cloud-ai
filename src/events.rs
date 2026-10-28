@@ -13,6 +13,8 @@ pub enum Event {
     ChatDeleted { chat_id: i64, project_id: i64 },
     Message { message: Message },
     Delta { chat_id: i64, run_id: i64, kind: String, text: String },
+    /// How full the chat's context window is (see `agents::claude_context`).
+    ChatContext { chat_id: i64, context: serde_json::Value },
     RunQueued { run: Run },
     RunStarted { run: Run },
     RunFinished { run: Run },

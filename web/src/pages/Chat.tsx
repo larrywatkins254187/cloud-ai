@@ -10,6 +10,7 @@ import {
   Brain,
   ChevronRight,
   Clock,
+  Eye,
   FileText,
   GitMerge,
   Loader2,
@@ -29,7 +30,9 @@ import { RequestCard } from "../components/RequestCard";
 import { Todos, ToolCard } from "../components/ToolCard";
 import { DeployBanner } from "../components/DeployStatus";
 import { ErrorState, queryGate, Skeleton, StaleNotice } from "../components/Loadable";
-import { AgentsPanel, AgentStatusBadge, useStopAgent } from "../components/AgentsPanel";
+import { AgentsPanel, AgentStatusBadge, useStopAgent, type PanelTab } from "../components/AgentsPanel";
+import { ContextMeter } from "../components/ContextMeter";
+import { FilesList, useChanges } from "../components/FilesPanel";
 import { buildAgents, isAgentTool, type SubAgent } from "../lib/agents";
 import { BackgroundList, useBackgroundActions } from "../components/BackgroundPanel";
 import { buildBackground, isBackgroundCall, withLiveStatus, type BgTask } from "../lib/background";
@@ -97,7 +100,19 @@ function readPanelPref() {
  * The streaming reply of a running prompt. It subscribes to the stream on its own,
  * so each streamed token re-renders only this, not the whole conversation.
  */
-function LiveTail({ chatId, waiting, startedAt, onGrow }: { chatId: number; waiting: boolean; startedAt?: string | null; onGrow: () => void }) {
+function LiveTail({
+  chatId,
+  waiting,
+  background,
+  startedAt,
+  onGrow,
+}: {
+  chatId: number;
+  waiting: boolean;
+  background?: boolean;
+  startedAt?: string | null;
+  onGrow: () => void;
+}) {
   const stream = useStream(chatId);
   // Markdown re-parsing can lag behind fast streams without blocking typing or scrolling.
   const text = useDeferredValue(stream?.text ?? "");
@@ -108,7 +123,7 @@ function LiveTail({ chatId, waiting, startedAt, onGrow }: { chatId: number; wait
       {text && <Markdown text={text + " ▍"} />}
       <div className="flex items-center gap-2 text-xs text-muted">
         <Loader2 className="size-3.5 animate-spin" />
-        {waiting ? "Waiting for your answer…" : stream?.activity || "Working…"}
+        {waiting ? "Waiting for your answer…" : stream?.activity || (background ? "Waiting for background tasks to finish…" : "Working…")}
         {startedAt && <span>· {duration(startedAt)}</span>}
       </div>
     </div>
@@ -245,9 +260,12 @@ function SettingsModal({ chat, open, onClose }: { chat: ChatT; open: boolean; on
         <span className="text-[13px] font-medium">Title</span>
         <input className="w-full h-10 rounded-lg border border-border bg-panel px-3 text-sm" value={title} onChange={(e) => setTitle(e.target.value)} />
       </label>
-      <AgentPicker v={v} set={(c) => setV({ ...c, tool: chat.tool })} lockTool />
-      <p className="text-xs text-muted">Changes apply to the next prompt; the conversation continues where it left off.</p>
-      {chat.project?.deployable && <Toggle checked={autoDeploy} onChange={setAutoDeploy} label="Deploy automatically when a prompt finishes" />}
+      <AgentPicker v={v} set={(c) => setV({ ...c, tool: chat.tool })} lockTool readOnly={chat.read_only} />
+      <p className="text-xs text-muted">
+        Changes apply to the next prompt; the conversation continues where it left off.
+        {chat.read_only && " This chat is read-only: the agent can read the project but not change it."}
+      </p>
+      {chat.project?.deployable && !chat.read_only && <Toggle checked={autoDeploy} onChange={setAutoDeploy} label="Deploy automatically when a prompt finishes" />}
     </Modal>
   );
 }
@@ -295,8 +313,11 @@ export default function Chat() {
   const bg = useMemo(() => withLiveStatus(bgRaw, bgHasRunning ? liveQ.data : undefined, liveQ.dataUpdatedAt), [bgRaw, bgHasRunning, liveQ.data, liveQ.dataUpdatedAt]);
   const bgByRef = useMemo(() => new Map<string, BgTask>(bg.filter((t) => t.ref).map((t) => [t.ref, t])), [bg]);
   const runningBg = bg.filter((t) => t.status === "running").length;
-  const [panelTab, setPanelTab] = useState<"agents" | "background">("agents");
+  const [panelTab, setPanelTab] = useState<PanelTab>("agents");
   const [bgFocus, setBgFocus] = useState<string | null>(null);
+  const [fileFocus, setFileFocus] = useState<string | null>(null);
+  const changes = useChanges(id, !!chatQ.data);
+  const changedFiles = changes.data?.totals.files ?? 0;
   const bgActions = useBackgroundActions(id);
   const openBg = (taskId: string) => {
     setBgFocus(taskId);
@@ -352,11 +373,19 @@ export default function Chat() {
         </Link>
         <StatusDot status={chat.status} />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium truncate">{chat.title}</div>
+          <div className="text-sm font-medium truncate flex items-center gap-1.5">
+            <span className="truncate">{chat.title}</span>
+            {chat.read_only && (
+              <Badge tone="accent" className="shrink-0">
+                <Eye className="inline size-3 mr-0.5 -mt-px" />
+                Read-only
+              </Badge>
+            )}
+          </div>
           <div className="text-[11px] text-muted truncate">
             {chat.project?.name} · {toolName(chat.tool)}
             {chat.model ? ` · ${chat.model}` : ""}
-            {chat.effort ? ` · ${chat.effort}` : ""} · {modeLabel(chat.permission_mode)}
+            {chat.effort ? ` · ${chat.effort}` : ""} · {chat.read_only ? "read-only" : modeLabel(chat.permission_mode)}
             {chat.worktree_branch ? ` · ${chat.worktree_branch}` : ""}
           </div>
         </div>
@@ -364,9 +393,10 @@ export default function Chat() {
           {chat.cost_usd > 0 && <span>${chat.cost_usd.toFixed(2)}</span>}
           <span>{tokens(chat.input_tokens + chat.output_tokens)} tok</span>
         </div>
+        <ContextMeter chatId={id} />
         <button
-          title="Sub-agents and background tasks"
-          aria-label="Sub-agents and background tasks"
+          title="Sub-agents, background tasks and changed files"
+          aria-label="Sub-agents, background tasks and changed files"
           onClick={() => setPanel(!panel)}
           className={cx(
             "relative inline-flex h-9 items-center gap-1 rounded-lg px-2 text-muted hover:bg-panel-2 hover:text-text transition",
@@ -519,7 +549,7 @@ export default function Chat() {
               <MsgView key={it.m.id} m={it.m} />
             ),
           )}
-          {running && <LiveTail chatId={id} waiting={chat.status === "waiting"} startedAt={current?.started_at} onGrow={stickToBottom} />}
+          {running && <LiveTail chatId={id} waiting={chat.status === "waiting"} background={chat.waiting_background} startedAt={current?.started_at} onGrow={stickToBottom} />}
           {chat.status === "queued" && !running && (
             <div className="flex items-center gap-2 text-xs text-muted">
               <Clock className="size-3.5" /> Queued — waiting for a free slot
@@ -550,7 +580,15 @@ export default function Chat() {
             onSend={send}
             running={running}
             onStop={() => run(() => api.post(`/api/chats/${id}/stop`), "Stopping…")}
-            placeholder={running ? "Send a follow-up (it waits in the queue)…" : `Message ${toolName(chat.tool)}…`}
+            placeholder={
+              chat.waiting_background
+                ? "Send a follow-up (this stops waiting for the background tasks)…"
+                : running
+                  ? "Send a follow-up (it waits in the queue)…"
+                  : chat.read_only
+                    ? `Ask ${toolName(chat.tool)} about the code (read-only)…`
+                    : `Message ${toolName(chat.tool)}…`
+            }
           />
         </div>
       </div>
@@ -574,6 +612,8 @@ export default function Chat() {
               bgCount={bg.length}
               bgRunning={runningBg}
               background={<BackgroundList chatId={id} tasks={bg} focus={bgFocus} onFocus={setBgFocus} isCodex={chat.tool === "codex"} />}
+              filesCount={changedFiles}
+              files={<FilesList chatId={id} focus={fileFocus} onFocus={setFileFocus} />}
             />
           </aside>
         </>

@@ -736,6 +736,7 @@ async fn create_chat_from_picker(st: &St, message_id: i64, pid: i64, tool: &str,
             worktree: false,
             auto_deploy: false,
             schedule_id: None,
+            read_only: false,
         },
     )?;
     if !prompt.is_empty() {

@@ -155,6 +155,7 @@ pub fn fire(st: &St, id: i64) -> Result<i64> {
                     worktree: s.use_worktree,
                     auto_deploy: s.auto_deploy,
                     schedule_id: Some(s.id),
+                    read_only: false,
                 },
             )?;
             if s.mode == "continue" {

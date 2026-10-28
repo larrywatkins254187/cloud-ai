@@ -18,7 +18,20 @@ export function useModels() {
 }
 
 /** Tool, model, reasoning effort and permission mode selectors. */
-export function AgentPicker({ v, set, compact, lockTool }: { v: AgentConfig; set: (c: AgentConfig) => void; compact?: boolean; lockTool?: boolean }) {
+export function AgentPicker({
+  v,
+  set,
+  compact,
+  lockTool,
+  readOnly,
+}: {
+  v: AgentConfig;
+  set: (c: AgentConfig) => void;
+  compact?: boolean;
+  lockTool?: boolean;
+  /** Read-only chats have a fixed permission mode. */
+  readOnly?: boolean;
+}) {
   const models = useModels();
   const [refreshing, setRefreshing] = useState(false);
   const list = models.data?.[v.tool] ?? [];
@@ -73,13 +86,24 @@ export function AgentPicker({ v, set, compact, lockTool }: { v: AgentConfig; set
         aria-label="Reasoning effort"
         options={[{ value: "", label: "Default effort" }, ...efforts.map((e) => ({ value: e, label: `${e[0].toUpperCase()}${e.slice(1)} effort` }))]}
       />
-      <Select
-        className={cls}
-        value={v.permission_mode}
-        onChange={(m) => set({ ...v, permission_mode: m })}
-        aria-label="Permissions"
-        options={MODES.map((m) => ({ value: m.id as PermMode, label: m.label, hint: m.hint }))}
-      />
+      {readOnly ? (
+        <Select
+          className={cls}
+          value={"read-only"}
+          disabled
+          onChange={() => {}}
+          aria-label="Permissions"
+          options={[{ value: "read-only", label: "Read-only", hint: "Can read, cannot change anything" }]}
+        />
+      ) : (
+        <Select
+          className={cls}
+          value={v.permission_mode}
+          onChange={(m) => set({ ...v, permission_mode: m })}
+          aria-label="Permissions"
+          options={MODES.map((m) => ({ value: m.id as PermMode, label: m.label, hint: m.hint }))}
+        />
+      )}
     </div>
   );
 }

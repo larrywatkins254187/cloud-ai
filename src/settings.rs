@@ -9,6 +9,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("max_codex", "3"),
     ("ram_guard_mb", "300"),
     ("idle_kill_minutes", "5"),
+    ("background_wait_minutes", "120"),
     ("claude_path", "claude"),
     ("codex_path", "codex"),
     ("default_permission_mode", "bypass"),

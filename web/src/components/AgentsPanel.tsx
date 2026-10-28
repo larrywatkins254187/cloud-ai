@@ -1,10 +1,12 @@
-import { Bot, CheckCircle2, ChevronRight, CircleSlash, Loader2, Square, SquareTerminal, X, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, FileDiff, ChevronRight, CircleSlash, Loader2, Square, SquareTerminal, X, XCircle } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { AgentProgress, AgentStatus, SubAgent } from "../lib/agents";
 import { api } from "../lib/api";
 import { duration, tokens } from "../lib/format";
 import type { Msg } from "../lib/types";
 import { Badge, Button, cx, IconButton, useConfirm, useToast } from "./ui";
+
+export type PanelTab = "agents" | "background" | "files";
 
 export function AgentStatusIcon({ status, className }: { status: AgentStatus; className?: string }) {
   if (status === "running") return <Loader2 className={cx("size-4 animate-spin text-accent shrink-0", className)} />;
@@ -132,6 +134,8 @@ export function AgentsPanel({
   bgCount = 0,
   bgRunning = 0,
   background,
+  filesCount = 0,
+  files,
 }: {
   chatId: number;
   agents: SubAgent[];
@@ -140,12 +144,14 @@ export function AgentsPanel({
   onFocus: (ref: string | null) => void;
   onClose: () => void;
   renderSteps: (msgs: Msg[]) => React.ReactNode;
-  /** With `onTab`, the panel also has a Background tab showing `background`. */
-  tab?: "agents" | "background";
-  onTab?: (t: "agents" | "background") => void;
+  /** With `onTab`, the panel also has Background and Files tabs. */
+  tab?: PanelTab;
+  onTab?: (t: PanelTab) => void;
   bgCount?: number;
   bgRunning?: number;
   background?: React.ReactNode;
+  filesCount?: number;
+  files?: React.ReactNode;
 }) {
   const running = agents.filter((a) => a.status === "running").length;
   useTick(running > 0);
@@ -156,11 +162,12 @@ export function AgentsPanel({
     <div className="flex flex-col h-full min-h-0 bg-bg">
       <div className="flex items-center gap-1 px-2 h-12 border-b border-border shrink-0">
         {onTab ? (
-          <div role="tablist" className="flex-1 flex items-center gap-1 min-w-0">
+          <div role="tablist" className="flex-1 flex items-center gap-0.5 min-w-0 overflow-x-auto scroll-thin">
             {(
               [
                 { id: "agents", label: "Sub-agents", icon: <Bot className="size-4" />, n: agents.length, r: running },
                 { id: "background", label: "Background", icon: <SquareTerminal className="size-4" />, n: bgCount, r: bgRunning },
+                { id: "files", label: "Files", icon: <FileDiff className="size-4" />, n: filesCount, r: 0 },
               ] as const
             ).map((t) => (
               <button
@@ -169,7 +176,7 @@ export function AgentsPanel({
                 aria-selected={tab === t.id}
                 onClick={() => onTab(t.id)}
                 className={cx(
-                  "inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[13px] whitespace-nowrap",
+                  "inline-flex items-center gap-1.5 h-8 px-2 rounded-lg text-[13px] whitespace-nowrap shrink-0",
                   tab === t.id ? "bg-panel-2 text-text font-medium" : "text-muted hover:text-text",
                 )}
               >
@@ -198,6 +205,8 @@ export function AgentsPanel({
       <div className="flex-1 overflow-y-auto scroll-thin p-3 space-y-2">
         {onTab && tab === "background" ? (
           background
+        ) : onTab && tab === "files" ? (
+          files
         ) : list.length === 0 ? (
           <div className="text-center text-sm text-muted py-10 px-4">
             No sub-agents in this chat yet. When Claude or Codex hands work to a sub-agent, it shows up here with its live status and steps.

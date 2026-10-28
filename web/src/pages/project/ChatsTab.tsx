@@ -26,6 +26,7 @@ export default function ChatsTab({ project }: { project: Project }) {
   const [cfg, setCfg] = useState<AgentConfig>(loadLast);
   const [worktree, setWorktree] = useState(false);
   const [autoDeploy, setAutoDeploy] = useState(false);
+  const [readOnly, setReadOnly] = useState(false);
   const [archived, setArchived] = useState(false);
   const chats = useQuery({
     queryKey: ["chats", project.id, archived],
@@ -46,8 +47,9 @@ export default function ChatsTab({ project }: { project: Project }) {
         ...cfg,
         prompt,
         attachments: attachments.map((a) => a.id),
-        worktree,
-        auto_deploy: autoDeploy,
+        worktree: worktree && !readOnly,
+        auto_deploy: autoDeploy && !readOnly,
+        read_only: readOnly,
       });
       qc.invalidateQueries({ queryKey: ["chats", project.id] });
       nav(`/chats/${chat.id}`);
@@ -62,13 +64,22 @@ export default function ChatsTab({ project }: { project: Project }) {
     <div className="space-y-5">
       <Card className="p-4 space-y-3">
         <div className="text-sm font-medium">New chat</div>
-        <AgentPicker v={cfg} set={setCfg} />
-        <Composer onSend={start} draftKey={`draft:new:${project.id}`} placeholder={`What should ${cfg.tool === "codex" ? "Codex" : "Claude"} do in ${project.name}?`} />
+        <AgentPicker v={cfg} set={setCfg} readOnly={readOnly} />
+        <Composer
+          onSend={start}
+          draftKey={`draft:new:${project.id}`}
+          placeholder={
+            readOnly
+              ? `Ask ${cfg.tool === "codex" ? "Codex" : "Claude"} about ${project.name} (read-only)…`
+              : `What should ${cfg.tool === "codex" ? "Codex" : "Claude"} do in ${project.name}?`
+          }
+        />
         <div className="flex flex-wrap gap-x-6">
-          {project.is_git && (
+          <Toggle checked={readOnly} onChange={setReadOnly} label="Read-only" hint="Read and answer only: no file changes, branch or deploy" />
+          {project.is_git && !readOnly && (
             <Toggle checked={worktree} onChange={setWorktree} label="Separate git worktree" hint="Work on its own branch; merge when done" />
           )}
-          {project.deployable && <Toggle checked={autoDeploy} onChange={setAutoDeploy} label="Deploy when finished" />}
+          {project.deployable && !readOnly && <Toggle checked={autoDeploy} onChange={setAutoDeploy} label="Deploy when finished" />}
         </div>
       </Card>
       <Card>

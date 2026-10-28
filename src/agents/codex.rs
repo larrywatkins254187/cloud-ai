@@ -31,6 +31,9 @@ struct TurnCtx {
     reasoning_tokens: i64,
     model: String,
     failure: Option<String>,
+    /// Size of the latest request and the model's context window.
+    ctx_used: i64,
+    ctx_max: i64,
 }
 
 impl TurnCtx {
@@ -57,6 +60,17 @@ struct ChildCtx {
     /// Item id of the spawnAgent call; the child's messages nest under it.
     parent: String,
     turn_id: Option<String>,
+    /// The chat's own thread (the top of the agent tree).
+    root_thread: String,
+    running: bool,
+}
+
+/// A chat turn that ended while its sub-agents were still working. The prompt
+/// finishes when they are done (or the parent continues and then ends).
+struct Waiting {
+    ctx: TurnCtx,
+    outcome: TurnOutcome,
+    since: Instant,
 }
 
 /// Codex collab agent status → the status shown in the panel.
@@ -81,6 +95,8 @@ pub struct CodexProc {
     turns: Mutex<HashMap<String, TurnCtx>>,
     /// Sub-agent threads spawned by a chat's turn, by thread id.
     children: Mutex<HashMap<String, ChildCtx>>,
+    /// Chat turns waiting for their sub-agents, by thread id.
+    waiting: Mutex<HashMap<String, Waiting>>,
     alive: AtomicBool,
     last_active: Mutex<Instant>,
     stderr: Mutex<String>,
@@ -120,7 +136,40 @@ impl CodexProc {
     }
 
     fn busy(&self) -> bool {
-        !self.turns.lock().unwrap().is_empty()
+        !self.turns.lock().unwrap().is_empty() || !self.waiting.lock().unwrap().is_empty()
+    }
+
+    fn running_children(&self, root: &str) -> usize {
+        self.children.lock().unwrap().values().filter(|c| c.running && c.root_thread == root).count()
+    }
+
+    /// Finish a waiting turn now. Returns false when nothing was waiting.
+    fn release_thread(&self, st: &St, thread: &str, note: Option<&str>) -> bool {
+        let Some(mut w) = self.waiting.lock().unwrap().remove(thread) else { return false };
+        if let Some(n) = note {
+            store_msg(st, w.ctx.chat_id, w.ctx.project_id, w.ctx.run_id, "system", json!({"text": n}));
+        }
+        if let Some(done) = w.ctx.done.take() {
+            let _ = done.send(w.outcome);
+        }
+        true
+    }
+
+    /// A sub-agent stopped. When none of the chat's agents is left running, give the
+    /// parent a moment to continue on its own, then finish the prompt.
+    fn child_stopped(self: &Arc<Self>, st: &St, root: &str) {
+        if self.running_children(root) > 0 || !self.waiting.lock().unwrap().contains_key(root) {
+            return;
+        }
+        let p = self.clone();
+        let st = st.clone();
+        let root = root.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(8)).await;
+            if p.running_children(&root) == 0 {
+                p.release_thread(&st, &root, None);
+            }
+        });
     }
 }
 
@@ -176,6 +225,19 @@ impl CodexManager {
 }
 
 impl CodexManager {
+    /// Finish a chat's prompt that only waits for its sub-agents. Returns false when it was not waiting.
+    pub async fn release(&self, st: &St, chat_id: i64, note: Option<&str>) -> bool {
+        let p = self.proc_.lock().await.clone();
+        let Some(p) = p else { return false };
+        let thread = p.waiting.lock().unwrap().iter().find(|(_, w)| w.ctx.chat_id == chat_id).map(|(t, _)| t.clone());
+        thread.map(|t| p.release_thread(st, &t, note)).unwrap_or(false)
+    }
+
+    pub async fn is_waiting(&self, chat_id: i64) -> bool {
+        let p = self.proc_.lock().await.clone();
+        p.map(|p| p.waiting.lock().unwrap().values().any(|w| w.ctx.chat_id == chat_id)).unwrap_or(false)
+    }
+
     /// Interrupt one sub-agent thread. Returns false when its turn isn't known.
     pub async fn interrupt_agent(&self, chat_id: i64, spawn_id: &str) -> bool {
         let p = self.proc_.lock().await.clone();
@@ -220,6 +282,7 @@ pub async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
         thread_models: Mutex::new(HashMap::new()),
         turns: Mutex::new(HashMap::new()),
         children: Mutex::new(HashMap::new()),
+        waiting: Mutex::new(HashMap::new()),
         alive: AtomicBool::new(true),
         last_active: Mutex::new(Instant::now()),
         stderr: Mutex::new(String::new()),
@@ -263,6 +326,11 @@ pub async fn start_proc(st: &St) -> Result<Arc<CodexProc>> {
             for (_, mut t) in p.turns.lock().unwrap().drain() {
                 if let Some(done) = t.done.take() {
                     let _ = done.send(TurnOutcome::error(format!("Codex exited unexpectedly. {err}")));
+                }
+            }
+            for (_, mut w) in p.waiting.lock().unwrap().drain() {
+                if let Some(done) = w.ctx.done.take() {
+                    let _ = done.send(w.outcome);
                 }
             }
         });
@@ -312,6 +380,14 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
         return;
     }
     let Some(thread) = params["threadId"].as_str() else { return };
+    if method == "turn/started" && !p.turns.lock().unwrap().contains_key(thread) {
+        // The parent continues after its sub-agents reported back: the prompt goes on.
+        if let Some(w) = p.waiting.lock().unwrap().remove(thread) {
+            let mut ctx = w.ctx;
+            ctx.turn_id = params["turn"]["id"].as_str().map(String::from);
+            p.turns.lock().unwrap().insert(thread.to_string(), ctx);
+        }
+    }
     let mut turns = p.turns.lock().unwrap();
     let Some(t) = turns.get_mut(thread) else {
         drop(turns);
@@ -344,7 +420,7 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
             }
         }
         "item/completed" => {
-            if let Some(text) = store_item(st, p, (chat_id, project_id, run_id), &params["item"], &Value::Null) {
+            if let Some(text) = store_item(st, p, (chat_id, project_id, run_id), thread, &params["item"], &Value::Null) {
                 t.last_text = text;
             }
         }
@@ -357,6 +433,13 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
             t.output_tokens += last["outputTokens"].as_i64().unwrap_or(0);
             t.cached_tokens += last["cachedInputTokens"].as_i64().unwrap_or(0);
             t.reasoning_tokens += last["reasoningOutputTokens"].as_i64().unwrap_or(0);
+            let used = last["totalTokens"].as_i64().unwrap_or_else(|| last["inputTokens"].as_i64().unwrap_or(0) + last["outputTokens"].as_i64().unwrap_or(0));
+            if used > 0 {
+                t.ctx_used = used;
+            }
+            if let Some(w) = params["tokenUsage"]["modelContextWindow"].as_i64() {
+                t.ctx_max = w;
+            }
         }
         "error" => {
             if params["willRetry"] != true {
@@ -367,6 +450,9 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
             let turn = &params["turn"];
             let status = turn["status"].as_str().unwrap_or("completed");
             let mut ctx = turns.remove(thread).unwrap();
+            if ctx.ctx_used > 0 {
+                super::save_context(st, chat_id, project_id, super::codex_context(&ctx.model, ctx.ctx_used, ctx.ctx_max));
+            }
             let outcome = TurnOutcome {
                 status: match status {
                     "completed" => "done",
@@ -391,6 +477,25 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
                 output_tokens: ctx.output_tokens,
                 usage: ctx.usage(),
             };
+            let waiting_for = p.running_children(thread);
+            if outcome.status == "done" && waiting_for > 0 {
+                // The sub-agents this turn started are still working.
+                let msg = format!("Waiting for {waiting_for} sub-agent{} before this prompt is done", if waiting_for == 1 { "" } else { "s" });
+                store_msg(st, chat_id, project_id, run_id, "system", json!({"text": msg}));
+                delta("activity", &format!("Waiting for {waiting_for} sub-agent{} to finish…", if waiting_for == 1 { "" } else { "s" }));
+                let since = Instant::now();
+                p.waiting.lock().unwrap().insert(thread.to_string(), Waiting { ctx, outcome, since });
+                let limit = settings::get_i64(&st.db, "background_wait_minutes").max(1) as u64;
+                let (p2, st2, th) = (p.clone(), st.clone(), thread.to_string());
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(limit * 60)).await;
+                    let same = p2.waiting.lock().unwrap().get(&th).map(|w| w.since == since).unwrap_or(false);
+                    if same {
+                        p2.release_thread(&st2, &th, Some(&format!("Stopped waiting for sub-agents after {limit} minutes")));
+                    }
+                });
+                return;
+            }
             if let Some(done) = ctx.done.take() {
                 let _ = done.send(outcome);
             }
@@ -401,7 +506,7 @@ fn notification(st: &St, p: &Arc<CodexProc>, method: &str, params: &Value) {
 
 /// Store a finished item as chat messages (nested under `parent` for sub-agents).
 /// Returns the text of an agent message.
-fn store_item(st: &St, p: &CodexProc, ctx: (i64, i64, i64), item: &Value, parent: &Value) -> Option<String> {
+fn store_item(st: &St, p: &CodexProc, ctx: (i64, i64, i64), root_thread: &str, item: &Value, parent: &Value) -> Option<String> {
     let (chat_id, project_id, run_id) = ctx;
     let id = item["id"].clone();
     let store = |kind: &str, mut data: Value| {
@@ -480,11 +585,19 @@ fn store_item(st: &St, p: &CodexProc, ctx: (i64, i64, i64), item: &Value, parent
                 store("tool_result", json!({"tool_use_id": id, "output": summary.join("\n"), "is_error": item["status"] == "failed"}));
                 let parent_id = id.as_str().unwrap_or("").to_string();
                 for r in &receivers {
+                    let status = states[r]["status"].as_str().map(collab_status).unwrap_or("running");
                     p.children.lock().unwrap().insert(
                         r.clone(),
-                        ChildCtx { chat_id, project_id, run_id, parent: parent_id.clone(), turn_id: None },
+                        ChildCtx {
+                            chat_id,
+                            project_id,
+                            run_id,
+                            parent: parent_id.clone(),
+                            turn_id: None,
+                            root_thread: root_thread.to_string(),
+                            running: status == "running",
+                        },
                     );
-                    let status = states[r]["status"].as_str().map(collab_status).unwrap_or("running");
                     store("agent", json!({"ref": parent_id, "task_id": r, "status": status, "background": true}));
                 }
             } else {
@@ -494,6 +607,11 @@ fn store_item(st: &St, p: &CodexProc, ctx: (i64, i64, i64), item: &Value, parent
                 for r in &receivers {
                     let child = p.children.lock().unwrap().get(r).cloned();
                     if let (Some(c), Some(s)) = (child, states[r]["status"].as_str()) {
+                        if collab_status(s) != "running" {
+                            if let Some(ch) = p.children.lock().unwrap().get_mut(r) {
+                                ch.running = false;
+                            }
+                        }
                         store_msg(st, c.chat_id, c.project_id, c.run_id, "agent", json!({
                             "ref": c.parent, "task_id": r, "status": collab_status(s), "summary": states[r]["message"], "background": true
                         }));
@@ -515,11 +633,12 @@ fn child_notification(st: &St, p: &Arc<CodexProc>, thread: &str, method: &str, p
         "turn/started" => {
             if let Some(ch) = p.children.lock().unwrap().get_mut(thread) {
                 ch.turn_id = params["turn"]["id"].as_str().map(String::from);
+                ch.running = true;
             }
             store_msg(st, c.chat_id, c.project_id, c.run_id, "agent", json!({"ref": c.parent, "task_id": thread, "status": "running", "background": true}));
         }
         "item/completed" => {
-            store_item(st, p, (c.chat_id, c.project_id, c.run_id), &params["item"], &parent);
+            store_item(st, p, (c.chat_id, c.project_id, c.run_id), &c.root_thread, &params["item"], &parent);
         }
         "turn/completed" => {
             let status = match params["turn"]["status"].as_str().unwrap_or("completed") {
@@ -529,10 +648,12 @@ fn child_notification(st: &St, p: &Arc<CodexProc>, thread: &str, method: &str, p
             };
             if let Some(ch) = p.children.lock().unwrap().get_mut(thread) {
                 ch.turn_id = None;
+                ch.running = false;
             }
             store_msg(st, c.chat_id, c.project_id, c.run_id, "agent", json!({
                 "ref": c.parent, "task_id": thread, "status": status, "summary": params["turn"]["error"]["message"], "background": true
             }));
+            p.child_stopped(st, &c.root_thread);
         }
         _ => {}
     }
@@ -635,9 +756,12 @@ pub async fn run_turn(st: &St, chat: &Chat, project: &Project, run: &Run, atts: 
 
 async fn run_turn_inner(st: &St, chat: &Chat, project: &Project, run: &Run, atts: &[Attachment]) -> Result<TurnOutcome> {
     let p = st.codex.get(st).await?;
-    let (approval, sandbox) = codex_policy(&chat.permission_mode);
+    let (approval, sandbox) = if chat.read_only { ("never", "read-only") } else { codex_policy(&chat.permission_mode) };
     let model = (!chat.model.is_empty() && chat.model != "default").then(|| chat.model.clone());
-    let sys = system_prompt(st, project);
+    let mut sys = system_prompt(st, project);
+    if chat.read_only {
+        sys = format!("{}{}{}", super::READ_ONLY_PROMPT, if sys.is_empty() { "" } else { "\n\n" }, sys);
+    }
     let mut thread_id = chat.cli_session_id.clone();
     if let Some(tid) = &thread_id {
         if !p.loaded.lock().unwrap().contains(tid) {
@@ -702,6 +826,8 @@ async fn run_turn_inner(st: &St, chat: &Chat, project: &Project, run: &Run, atts
             reasoning_tokens: 0,
             model: turn_model,
             failure: None,
+            ctx_used: 0,
+            ctx_max: 0,
         },
     );
     let mut input = vec![json!({"type": "text", "text": prompt_with_attachments(&run.prompt, atts), "text_elements": []})];

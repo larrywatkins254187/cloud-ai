@@ -42,6 +42,9 @@ pub fn router() -> Router<St> {
         .route("/api/chats/{id}/background/{task_id}/output", get(chats::background_output))
         .route("/api/chats/{id}/background/{task_id}/stop", post(chats::background_stop))
         .route("/api/chats/{id}/merge", post(chats::merge))
+        .route("/api/chats/{id}/context", get(chats::context))
+        .route("/api/chats/{id}/changes", get(chats::changes))
+        .route("/api/chats/{id}/changes/diff", get(chats::change_diff))
         .route("/api/runs/{id}/cancel", post(chats::cancel_run))
         .route("/api/requests/{id}/answer", post(chats::answer))
         .route("/api/requests/pending", get(chats::pending))
@@ -92,6 +95,7 @@ pub fn router() -> Router<St> {
         .merge(crate::updater::router())
         .merge(crate::devserver::router())
         .merge(crate::browser::router())
+        .merge(crate::deploy_assist::router())
         .route("/api/{*rest}", delete(not_found).get(not_found).post(not_found).put(not_found))
 }
 

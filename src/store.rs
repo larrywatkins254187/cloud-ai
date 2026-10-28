@@ -154,10 +154,13 @@ pub struct Chat {
     pub archived: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub read_only: bool,
+    /// Commit HEAD pointed at when the chat started (git projects).
+    pub base_sha: Option<String>,
 }
 
 impl Chat {
-    pub const COLS: &'static str = "id,project_id,user_id,title,tool,model,effort,permission_mode,cwd,worktree_branch,cli_session_id,status,auto_deploy,schedule_id,tg_topic_id,cost_usd,input_tokens,output_tokens,archived,created_at,updated_at";
+    pub const COLS: &'static str = "id,project_id,user_id,title,tool,model,effort,permission_mode,cwd,worktree_branch,cli_session_id,status,auto_deploy,schedule_id,tg_topic_id,cost_usd,input_tokens,output_tokens,archived,created_at,updated_at,read_only,base_sha";
     pub fn from_row(r: &Row) -> rusqlite::Result<Chat> {
         Ok(Chat {
             id: r.get(0)?,
@@ -181,6 +184,8 @@ impl Chat {
             archived: r.get::<_, i64>(18)? != 0,
             created_at: r.get(19)?,
             updated_at: r.get(20)?,
+            read_only: r.get::<_, i64>(21)? != 0,
+            base_sha: r.get(22)?,
         })
     }
 }

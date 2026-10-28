@@ -247,6 +247,13 @@ INSERT INTO run_usage(run_id,chat_id,project_id,user_id,author,schedule_id,sourc
   FROM runs r JOIN chats c ON c.id=r.chat_id
   WHERE COALESCE(r.input_tokens,0) + COALESCE(r.output_tokens,0) > 0 OR COALESCE(r.cost_usd,0) > 0;
 "#,
+    // v5: read-only chats, the commit a chat started from (for its changed files) and
+    // the latest context window snapshot.
+    r#"
+ALTER TABLE chats ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chats ADD COLUMN base_sha TEXT;
+ALTER TABLE chats ADD COLUMN context TEXT;
+"#,
 ];
 
 impl Db {

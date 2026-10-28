@@ -62,9 +62,64 @@ export interface Chat {
   archived: boolean;
   created_at: string;
   updated_at: string;
+  read_only: boolean;
+  base_sha: string | null;
   project?: { id: number; name: string; path: string; deployable: boolean };
   active_runs?: Run[];
   pending_requests?: Req[];
+  /** The running prompt only waits for its background sub-agents or shell commands. */
+  waiting_background?: boolean;
+}
+
+export interface ContextItem {
+  name: string;
+  tokens: number;
+  source?: string;
+  server?: string;
+  type?: string;
+}
+
+/** How a chat's context window is used (Claude: full breakdown; Codex: used/free only). */
+export interface ChatContext {
+  tool: Tool;
+  model: string;
+  used: number;
+  max: number;
+  percentage: number;
+  auto_compact_threshold?: number;
+  auto_compact?: boolean;
+  categories: { id: string; name: string; tokens: number; kind: "used" | "deferred" | "buffer" | "free" | string; deferred?: boolean }[];
+  mcp_tools?: ContextItem[];
+  memory_files?: ContextItem[];
+  agents?: ContextItem[];
+  skills?: ContextItem[];
+  messages?: {
+    tool_calls: number;
+    tool_results: number;
+    attachments: number;
+    assistant: number;
+    user: number;
+    other: number;
+    by_tool: ContextItem[];
+  } | null;
+  updated_at: string;
+}
+
+export interface ChangedFile {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  by_chat: boolean;
+}
+
+export interface ChatChanges {
+  mode: "git" | "tools";
+  base: string | null;
+  shared: boolean;
+  totals: { files: number; added: number; modified: number; deleted: number; additions: number; deletions: number };
+  files: ChangedFile[];
 }
 
 export interface Attachment {
@@ -208,5 +263,6 @@ export type ServerEvent =
   | { type: "deploy_updated"; deploy: Deploy }
   | { type: "deploy_log"; deploy_id: number; project_id: number; line: string }
   | { type: "notice"; level: string; text: string }
+  | { type: "chat_context"; chat_id: number; context: ChatContext }
   | { type: "resync" }
   | { type: string; [k: string]: any };
