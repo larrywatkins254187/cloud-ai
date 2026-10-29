@@ -69,6 +69,17 @@ export interface Chat {
   pending_requests?: Req[];
   /** The running prompt only waits for its background sub-agents or shell commands. */
   waiting_background?: boolean;
+  /** The latest deploy of this chat's changes (chat lists only). */
+  deploy?: ChatDeploy | null;
+}
+
+export interface ChatDeploy {
+  id: number;
+  kind: "deploy" | "rollback";
+  status: "running" | "success" | "failed";
+  commit_sha: string | null;
+  created_at: string;
+  finished_at: string | null;
 }
 
 export interface ContextItem {
@@ -247,6 +258,7 @@ export interface Deploy {
   created_at: string;
   finished_at: string | null;
   tg_thread_id?: number | null;
+  chat_id?: number | null;
 }
 
 export type ServerEvent =

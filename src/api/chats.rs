@@ -29,9 +29,44 @@ fn chat_json(st: &St, c: &Chat) -> Value {
     v
 }
 
+/// The latest deploy of each chat, by chat id.
+fn latest_deploys(st: &St, chats: &[Chat]) -> std::collections::HashMap<i64, Value> {
+    let mut out = std::collections::HashMap::new();
+    if chats.is_empty() {
+        return out;
+    }
+    let ids = chats.iter().map(|c| c.id.to_string()).collect::<Vec<_>>().join(",");
+    let c = st.db.conn();
+    let Ok(mut q) = c.prepare(&format!(
+        "SELECT chat_id,id,kind,status,commit_sha,created_at,finished_at FROM deploys
+         WHERE id IN (SELECT MAX(id) FROM deploys WHERE chat_id IN ({ids}) GROUP BY chat_id)"
+    )) else {
+        return out;
+    };
+    let rows = q.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            json!({
+                "id": r.get::<_, i64>(1)?,
+                "kind": r.get::<_, String>(2)?,
+                "status": r.get::<_, String>(3)?,
+                "commit_sha": r.get::<_, Option<String>>(4)?,
+                "created_at": r.get::<_, String>(5)?,
+                "finished_at": r.get::<_, Option<String>>(6)?,
+            }),
+        ))
+    });
+    if let Ok(rows) = rows {
+        out.extend(rows.flatten());
+    }
+    out
+}
+
 /// Chats as JSON, looking each owner's name up once instead of once per chat.
+/// Each chat carries its latest deploy (or null).
 fn chats_json(st: &St, chats: &[Chat]) -> Value {
     let mut names: std::collections::HashMap<Option<i64>, String> = std::collections::HashMap::new();
+    let mut deploys = latest_deploys(st, chats);
     Value::Array(
         chats
             .iter()
@@ -39,6 +74,7 @@ fn chats_json(st: &St, chats: &[Chat]) -> Value {
                 let mut v = serde_json::to_value(c).unwrap();
                 let name = names.entry(c.user_id).or_insert_with(|| store::username(&st.db, c.user_id));
                 v["user"] = json!(name);
+                v["deploy"] = deploys.remove(&c.id).unwrap_or(Value::Null);
                 v
             })
             .collect(),

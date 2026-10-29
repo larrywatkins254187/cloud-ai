@@ -15,6 +15,8 @@ mod devserver;
 mod events;
 mod extensions;
 mod git;
+mod plan_usage;
+mod prices;
 mod runner;
 mod scheduler;
 mod settings;
@@ -167,7 +169,8 @@ async fn serve(cfg: Config) -> Result<()> {
     telegram::spawn(st.clone());
     sysmon::spawn(st.clone());
     updater::spawn(st.clone());
-    agents::codex::spawn_usage_refresh(st.clone());
+    plan_usage::spawn(st.clone());
+    prices::spawn(st.clone());
 
     let app = api::router()
         .fallback(web::serve)

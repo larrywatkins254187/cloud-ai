@@ -141,6 +141,11 @@ function handle(qc: QueryClient, ev: ServerEvent) {
       qc.invalidateQueries({ queryKey: ["deploys", e.deploy.project_id] });
       qc.invalidateQueries({ queryKey: ["deploy-history", e.deploy.project_id] });
       qc.invalidateQueries({ queryKey: ["active-deploys"] });
+      if (e.deploy.chat_id) {
+        // Chat lists show each chat's latest deploy.
+        qc.invalidateQueries({ queryKey: ["recent-chats"] });
+        qc.invalidateQueries({ queryKey: ["chats", e.deploy.project_id] });
+      }
       qc.setQueryData(["deploy", e.deploy.id], (old: any) => (old ? { ...e.deploy, log: old.log } : old));
       break;
     case "deploy_log":

@@ -208,6 +208,17 @@ impl CodexManager {
         }
     }
 
+    /// Stop the app-server unless a turn is running on it (it keeps the login it
+    /// started with, so this makes the next one pick up a new account).
+    pub async fn stop_if_idle(&self) {
+        let mut guard = self.proc_.lock().await;
+        if guard.as_ref().is_some_and(|p| !p.busy()) {
+            if let Some(p) = guard.take() {
+                p.kill();
+            }
+        }
+    }
+
     pub async fn interrupt(&self, chat_id: i64) {
         let p = self.proc_.lock().await.clone();
         let Some(p) = p else { return };
@@ -859,15 +870,19 @@ async fn run_turn_inner(st: &St, chat: &Chat, project: &Project, run: &Run, atts
     Ok(rx.await.unwrap_or_else(|_| TurnOutcome::error("Codex stopped")))
 }
 
-/// Ask Codex for the account's current plan usage. Uses the running app-server
-/// when there is one, otherwise a short-lived one.
-pub async fn refresh_rate_limits(st: &St) -> Result<Value> {
-    let shared = st.codex.current().await;
+/// Ask Codex for the account's current plan usage, and which account it is. Uses
+/// the running app-server when there is one, otherwise (or with `fresh`, after a
+/// login change, since a running app-server keeps its old login) a short-lived one.
+pub async fn refresh_rate_limits(st: &St, fresh: bool) -> Result<Value> {
+    let shared = if fresh { None } else { st.codex.current().await };
     let (p, temp) = match shared {
         Some(p) => (p, false),
         None => (start_proc(st).await?, true),
     };
     let res = p.request("account/rateLimits/read", json!({})).await;
+    if let Ok(acc) = p.request("account/read", json!({})).await {
+        crate::store::set_cli_info(st, "codex_account", &acc);
+    }
     if temp {
         p.kill();
     }
@@ -877,22 +892,6 @@ pub async fn refresh_rate_limits(st: &St) -> Result<Value> {
     }
     runner::set_rate_limits(st, "codex", v.clone());
     Ok(v)
-}
-
-/// Keep Codex plan usage fresh while Codex is logged in with ChatGPT.
-pub fn spawn_usage_refresh(st: St) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(20)).await;
-        loop {
-            let logged_in = !crate::store::get_cli_info(&st.db, "codex_account")["account"].is_null();
-            if logged_in {
-                if let Err(e) = refresh_rate_limits(&st).await {
-                    tracing::debug!("codex usage refresh: {e:#}");
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
-        }
-    });
 }
 
 /// Read the model catalog (and account) from a short-lived app-server.

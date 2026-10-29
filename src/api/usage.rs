@@ -3,8 +3,8 @@
 //! Every finished run stores one `run_usage` row per model it used. A report reads
 //! the rows in a date range (calendar days in the panel's timezone, weeks start on
 //! Saturday) and sums them by day, project, user, model, tool, chat and schedule.
-//! Rows without a reported cost (Codex) are priced from the admin's price table
-//! when the report is built, so editing prices also updates past estimates.
+//! Rows without a reported cost (Codex) are priced from the price table when the
+//! report is built, so price updates (daily, see `prices`) also update past estimates.
 use crate::auth::AuthUser;
 use crate::settings;
 use crate::state::St;
@@ -28,6 +28,18 @@ pub struct Price {
     pub cache_write: f64,
     #[serde(default)]
     pub output: f64,
+    /// "auto" (kept up to date from the public price list) or "manual" (added or
+    /// edited by an admin; never overwritten). Missing on tables saved before 0.6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+impl Price {
+    /// Same model and prices, ignoring where the row came from.
+    pub fn same_price(&self, o: &Price) -> bool {
+        self.model.trim().eq_ignore_ascii_case(o.model.trim())
+            && [self.input, self.cache_read, self.cache_write, self.output] == [o.input, o.cache_read, o.cache_write, o.output]
+    }
 }
 
 pub fn parse_prices(s: &str) -> Result<Vec<Price>, String> {
@@ -75,8 +87,17 @@ pub fn glob(pattern: &str, text: &str) -> bool {
     p[pi..].iter().all(|c| *c == '*')
 }
 
+/// The price for a model: a row with its exact name wins, otherwise the first row
+/// whose pattern matches. A context suffix such as `[1m]` is ignored.
 pub fn price_for<'a>(list: &'a [Price], model: &str) -> Option<&'a Price> {
-    list.iter().find(|p| glob(&p.model, model))
+    let model = model.trim();
+    let model = match model.find('[') {
+        Some(i) if model.ends_with(']') => &model[..i],
+        _ => model,
+    };
+    list.iter()
+        .find(|p| !p.model.contains('*') && p.model.trim().eq_ignore_ascii_case(model))
+        .or_else(|| list.iter().find(|p| glob(&p.model, model)))
 }
 
 #[derive(Default, Clone, Serialize)]
@@ -485,11 +506,24 @@ mod tests {
     }
 
     #[test]
-    fn first_matching_price_wins() {
-        let list = parse_prices(settings::DEFAULT_PRICES).unwrap();
-        assert_eq!(price_for(&list, "gpt-5.1-codex-mini").unwrap().model, "*-mini*");
-        assert_eq!(price_for(&list, "gpt-5.1-codex").unwrap().model, "gpt-5.1*");
+    fn exact_name_then_first_matching_pattern() {
+        let list = parse_prices(
+            r#"[
+              {"model":"*-mini*","input":0.25,"output":2},
+              {"model":"*","input":9,"output":9},
+              {"model":"gpt-5.1-codex-mini","input":0.3,"output":3},
+              {"model":"gpt-5.1*","input":1.25,"output":10}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(price_for(&list, "gpt-5.1-codex-mini").unwrap().input, 0.3);
+        assert_eq!(price_for(&list, "GPT-5.1-codex-mini").unwrap().input, 0.3);
+        assert_eq!(price_for(&list, "gpt-5.4-mini").unwrap().model, "*-mini*");
+        assert_eq!(price_for(&list, "gpt-5.1-codex").unwrap().model, "*");
         assert_eq!(price_for(&list, "default").unwrap().model, "*");
+        let builtin = parse_prices(settings::DEFAULT_PRICES).unwrap();
+        assert_eq!(price_for(&builtin, "claude-opus-5-5[1m]").unwrap().model, "claude-opus-5-5");
+        assert_eq!(price_for(&builtin, "claude-opus-9-9").unwrap().model, "claude-opus*");
         assert!(parse_prices(r#"[{"model":"x","input":-1}]"#).is_err());
         assert!(parse_prices(r#"[{"model":"","input":1}]"#).is_err());
     }

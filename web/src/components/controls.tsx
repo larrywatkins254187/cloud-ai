@@ -343,6 +343,7 @@ export function NumberInput({
   suffix,
   "aria-label": ariaLabel,
   decimals,
+  steppers = true,
 }: {
   value: string | number | null | undefined;
   onChange: (v: string) => void;
@@ -356,6 +357,8 @@ export function NumberInput({
   "aria-label"?: string;
   /** Allow a decimal point (defaults to true when `step` is fractional). */
   decimals?: boolean;
+  /** Show the − / + buttons (arrow keys still step when hidden). */
+  steppers?: boolean;
 }) {
   const allowDot = decimals ?? !Number.isInteger(step);
   const text = value === null || value === undefined ? "" : String(value);
@@ -400,13 +403,13 @@ export function NumberInput({
         }}
         className="order-2 flex-1 min-w-0 bg-transparent px-2 text-center tabular-nums outline-none placeholder:text-muted/70"
       />
-      <button type="button" tabIndex={-1} className={cx(btn, "order-1 border-r border-border")} aria-label="Decrease" disabled={disabled || (min !== undefined && num <= min)} onClick={() => bump(-1)}>
+      {steppers && <button type="button" tabIndex={-1} className={cx(btn, "order-1 border-r border-border")} aria-label="Decrease" disabled={disabled || (min !== undefined && num <= min)} onClick={() => bump(-1)}>
         <Minus className="size-3.5" />
-      </button>
+      </button>}
       {suffix && <span className="order-3 flex items-center pr-2 text-xs text-muted">{suffix}</span>}
-      <button type="button" tabIndex={-1} className={cx(btn, "order-4 border-l border-border")} aria-label="Increase" disabled={disabled || (max !== undefined && num >= max)} onClick={() => bump(1)}>
+      {steppers && <button type="button" tabIndex={-1} className={cx(btn, "order-4 border-l border-border")} aria-label="Increase" disabled={disabled || (max !== undefined && num >= max)} onClick={() => bump(1)}>
         <Plus className="size-3.5" />
-      </button>
+      </button>}
     </div>
   );
 }

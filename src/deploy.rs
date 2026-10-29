@@ -40,8 +40,9 @@ impl Log<'_> {
 
 /// Start a deploy (or a rollback when `rollback_to` is set). Returns the deploy
 /// id, or None when one is already running for the project. `tg_thread` is the
-/// Telegram topic its progress messages go to (None = General).
-pub fn start(st: &St, project_id: i64, by: &str, rollback_to: Option<String>, tg_thread: Option<i64>) -> Option<i64> {
+/// Telegram topic its progress messages go to (None = General); `chat_id` is the
+/// chat whose changes it ships, shown as a deploy icon on that chat.
+pub fn start(st: &St, project_id: i64, by: &str, rollback_to: Option<String>, tg_thread: Option<i64>, chat_id: Option<i64>) -> Option<i64> {
     if !st.deploys.running.lock().unwrap().insert(project_id) {
         return None;
     }
@@ -49,8 +50,8 @@ pub fn start(st: &St, project_id: i64, by: &str, rollback_to: Option<String>, tg
     let id = {
         let c = st.db.conn();
         let r = c.execute(
-            "INSERT INTO deploys(project_id,triggered_by,kind,status,created_at,tg_thread_id) VALUES(?1,?2,?3,'running',?4,?5)",
-            params![project_id, by, kind, now(), tg_thread],
+            "INSERT INTO deploys(project_id,triggered_by,kind,status,created_at,tg_thread_id,chat_id) VALUES(?1,?2,?3,'running',?4,?5,?6)",
+            params![project_id, by, kind, now(), tg_thread, chat_id],
         );
         if r.is_err() {
             st.deploys.running.lock().unwrap().remove(&project_id);
@@ -84,7 +85,7 @@ pub fn start(st: &St, project_id: i64, by: &str, rollback_to: Option<String>, tg
                 if let (Ok(p), Some(prev)) = (p, d.prev_sha) {
                     if p.auto_rollback && health_failed {
                         st2.notice("warn", format!("{}: health check failed, rolling back to {}", p.name, &prev[..prev.len().min(8)]));
-                        start(&st2, project_id, "auto-rollback", Some(prev), d.tg_thread_id);
+                        start(&st2, project_id, "auto-rollback", Some(prev), d.tg_thread_id, d.chat_id);
                     }
                 }
             }

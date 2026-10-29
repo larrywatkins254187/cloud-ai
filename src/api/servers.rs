@@ -145,12 +145,12 @@ pub async fn deploys(
 pub async fn active(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Json<Value>> {
     let c = st.db.conn();
     let mut q = c.prepare(
-        "SELECT d.id,d.project_id,d.triggered_by,d.kind,d.status,d.commit_sha,d.prev_sha,'' AS log,d.health,d.created_at,d.finished_at,d.tg_thread_id,p.name \
+        "SELECT d.id,d.project_id,d.triggered_by,d.kind,d.status,d.commit_sha,d.prev_sha,'' AS log,d.health,d.created_at,d.finished_at,d.tg_thread_id,d.chat_id,p.name \
          FROM deploys d LEFT JOIN projects p ON p.id=d.project_id \
          WHERE d.status='running' OR d.id IN (SELECT id FROM deploys ORDER BY id DESC LIMIT 30) ORDER BY d.id DESC",
     )?;
     let rows: Vec<(Deploy, String)> = q
-        .query_map([], |r| Ok((Deploy::from_row(r)?, r.get::<_, Option<String>>(12)?.unwrap_or_default())))?
+        .query_map([], |r| Ok((Deploy::from_row(r)?, r.get::<_, Option<String>>(13)?.unwrap_or_default())))?
         .collect::<Result<_, _>>()?;
     drop(q);
     drop(c);
@@ -179,7 +179,7 @@ pub async fn deploy(State(st): State<St>, AuthUser(u): AuthUser, Path(pid): Path
     if !can_access_project(&st.db, &u, pid) {
         return Err(ApiError::forbidden());
     }
-    let id = deploy::start(&st, pid, &u.username, None, None).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
+    let id = deploy::start(&st, pid, &u.username, None, None, None).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
     Ok(Json(json!({"id": id})))
 }
 
@@ -195,6 +195,6 @@ pub async fn rollback(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Pat
         return Err(ApiError::forbidden());
     }
     let sha = b.sha.or(d.commit_sha).ok_or_else(|| ApiError::bad("no commit recorded for this deploy"))?;
-    let nid = deploy::start(&st, d.project_id, &u.username, Some(sha), None).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
+    let nid = deploy::start(&st, d.project_id, &u.username, Some(sha), None, d.chat_id).ok_or_else(|| ApiError::bad("a deploy is already running for this project"))?;
     Ok(Json(json!({"id": nid})))
 }

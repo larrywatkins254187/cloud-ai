@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Download, Plus, RefreshCw, RotateCcw, Save, Send, X
 import { useEffect, useState } from "react";
 import { Badge, Button, Card, Field, IconButton, Input, NumberInput, PageHeader, Select, Textarea, Toggle, useAction, useConfirm, useToast } from "../../components/ui";
 import { api } from "../../lib/api";
-import { MODES } from "../../lib/format";
+import { MODES, timeAgo } from "../../lib/format";
 
 type S = Record<string, string>;
 
@@ -30,15 +30,17 @@ function timezoneOptions(current?: string) {
   });
 }
 
-type Price = { model: string; input: number | string; cache_read: number | string; cache_write: number | string; output: number | string };
+type Price = {
+  model: string;
+  input: number | string;
+  cache_read: number | string;
+  cache_write: number | string;
+  output: number | string;
+  /** "auto" rows are refreshed daily; "manual" rows (added or edited here) are kept. */
+  source?: "auto" | "manual";
+};
 
-const DEFAULT_PRICES: Price[] = [
-  { model: "*-mini*", input: 0.25, cache_read: 0.025, cache_write: 0, output: 2 },
-  { model: "gpt-5.2*", input: 1.75, cache_read: 0.175, cache_write: 0, output: 14 },
-  { model: "gpt-5.1*", input: 1.25, cache_read: 0.125, cache_write: 0, output: 10 },
-  { model: "gpt-5*", input: 1.25, cache_read: 0.125, cache_write: 0, output: 10 },
-  { model: "*", input: 1.75, cache_read: 0.175, cache_write: 0, output: 14 },
-];
+type PriceStatus = { source: string; source_url: string; updated_at: string | null; checked_at: string | null; error: string | null; builtin: Price[] };
 
 /** Turn half-typed numbers into numbers before saving. */
 function cleanPrices(json: string | undefined) {
@@ -46,60 +48,109 @@ function cleanPrices(json: string | undefined) {
   try {
     const rows = JSON.parse(json) as Price[];
     const n = (x: number | string) => (Number.isFinite(Number(x)) ? Number(x) : 0);
-    return JSON.stringify(rows.map((r) => ({ model: r.model.trim(), input: n(r.input), cache_read: n(r.cache_read), cache_write: n(r.cache_write), output: n(r.output) })));
+    return JSON.stringify(
+      rows.map((r) => ({ model: r.model.trim(), input: n(r.input), cache_read: n(r.cache_read), cache_write: n(r.cache_write), output: n(r.output), ...(r.source ? { source: r.source } : {}) })),
+    );
   } catch {
     return json;
   }
 }
 
-/** Editable price list; stored as JSON in the `usage_prices` setting. */
-function PriceTable({ value, onChange }: { value: string; onChange: (json: string) => void }) {
-  let rows: Price[];
+function parseRows(value: string, fallback: Price[]): Price[] {
   try {
-    rows = value.trim() ? JSON.parse(value) : DEFAULT_PRICES;
-    if (!Array.isArray(rows)) rows = DEFAULT_PRICES;
+    const rows = value.trim() ? JSON.parse(value) : fallback;
+    return Array.isArray(rows) ? rows : fallback;
   } catch {
-    rows = DEFAULT_PRICES;
+    return fallback;
   }
-  const set = (next: Price[]) =>
-    onChange(JSON.stringify(next.map((r) => ({ ...r, input: num(r.input), cache_read: num(r.cache_read), cache_write: num(r.cache_write), output: num(r.output) }))));
+}
+
+const isManual = (r: Price) => r.source !== "auto";
+const family = (m: string) => (m.toLowerCase().startsWith("claude") ? "claude" : m.includes("*") && !/gpt|codex|^o\d/i.test(m) ? "other" : "openai");
+
+type PriceFilter = "all" | "claude" | "openai" | "manual";
+const PAGE = 30;
+
+/** Editable price list; stored as JSON in the `usage_prices` setting. */
+function PriceTable({ value, onChange, builtin }: { value: string; onChange: (json: string) => void; builtin: Price[] }) {
+  const rows = parseRows(value, builtin);
+  const [filter, setFilter] = useState<PriceFilter>("all");
+  const [search, setSearch] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const ask = useConfirm();
   // Keep partially typed numbers ("1.") while editing; they are stored as numbers.
   const num = (x: number | string) => (typeof x === "number" ? x : x === "" || x.endsWith(".") ? x : Number(x));
-  const upd = (i: number, p: Partial<Price>) => set(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const set = (next: Price[]) =>
+    onChange(JSON.stringify(next.map((r) => ({ ...r, input: num(r.input), cache_read: num(r.cache_read), cache_write: num(r.cache_write), output: num(r.output) }))));
+  // Editing a row makes it manual, so the daily update leaves it alone.
+  const upd = (i: number, p: Partial<Price>) => set(rows.map((r, j) => (j === i ? { ...r, ...p, source: "manual" } : r)));
   const move = (i: number, d: number) => {
     const n = [...rows];
     [n[i], n[i + d]] = [n[i + d], n[i]];
     set(n);
   };
-  const cols: { k: keyof Price; label: string }[] = [
+  const manualCount = rows.filter(isManual).length;
+  const q = search.trim().toLowerCase();
+  const shown = rows
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => (filter === "all" ? true : filter === "manual" ? isManual(r) : family(r.model) === filter))
+    .filter(({ r }) => !q || r.model.toLowerCase().includes(q));
+  const visible = showAll || q ? shown : shown.slice(0, PAGE);
+  const canMove = filter === "all" && !q;
+  const cols: { k: "input" | "cache_read" | "cache_write" | "output"; label: string }[] = [
     { k: "input", label: "Input" },
     { k: "cache_read", label: "Cached input" },
     { k: "cache_write", label: "Cache write" },
     { k: "output", label: "Output" },
   ];
+  const tabs: { id: PriceFilter; label: string }[] = [
+    { id: "all", label: `All ${rows.length}` },
+    { id: "claude", label: "Claude" },
+    { id: "openai", label: "OpenAI / Codex" },
+    { id: "manual", label: `Manual ${manualCount}` },
+  ];
   return (
-    <div className="space-y-2">
-      <div className="hidden md:grid grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))_auto] gap-2 px-1 text-[11px] font-medium text-muted">
-        <div>Model pattern</div>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex rounded-lg border border-border p-0.5 text-xs">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              className={"px-2.5 py-1 rounded-md " + (filter === t.id ? "bg-panel-2 text-text font-medium" : "text-muted hover:text-text")}
+              onClick={() => setFilter(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <Input className="h-8 text-xs flex-1 min-w-[160px]" placeholder="Search models…" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search models" />
+      </div>
+      <div className="hidden md:grid grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,1fr))_auto] gap-2 px-1 text-[11px] font-medium text-muted">
+        <div>Model or pattern</div>
         {cols.map((c) => (
           <div key={c.k}>{c.label} $/1M</div>
         ))}
         <div className="w-[104px]" />
       </div>
-      {rows.map((r, i) => (
-        <div key={i} className="grid grid-cols-2 md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))_auto] gap-2 items-center rounded-lg border border-border md:border-0 p-2 md:p-0">
-          <Input className="col-span-2 md:col-span-1 h-9 font-mono text-xs" value={r.model} onChange={(e) => upd(i, { model: e.target.value })} placeholder="gpt-5*" aria-label="Model pattern" />
+      {visible.map(({ r, i }) => (
+        <div key={i} className="grid grid-cols-2 md:grid-cols-[minmax(0,2.4fr)_repeat(4,minmax(0,1fr))_auto] gap-2 items-center rounded-lg border border-border md:border-0 p-2 md:p-0">
+          <div className="col-span-2 md:col-span-1 flex items-center gap-1.5 min-w-0">
+            <Input className="h-9 font-mono text-xs min-w-0 flex-1" value={r.model} onChange={(e) => upd(i, { model: e.target.value })} placeholder="gpt-5*" aria-label="Model or pattern" />
+            <span title={isManual(r) ? "Added or edited by hand: daily updates keep it" : "Updated daily from the price list"}>
+              <Badge tone={isManual(r) ? "warn" : "neutral"} className="w-14 justify-center">{isManual(r) ? "manual" : "auto"}</Badge>
+            </span>
+          </div>
           {cols.map((c) => (
             <label key={c.k} className="block">
               <span className="md:hidden block text-[11px] text-muted mb-0.5">{c.label} $/1M</span>
-              <NumberInput className="h-9" decimals min={0} step={0.05} value={r[c.k]} onChange={(x) => upd(i, { [c.k]: x } as Partial<Price>)} aria-label={`${c.label} price`} />
+              <NumberInput className="h-9" decimals steppers={false} min={0} step={0.05} value={r[c.k]} onChange={(x) => upd(i, { [c.k]: x } as Partial<Price>)} aria-label={`${c.label} price`} />
             </label>
           ))}
           <div className="col-span-2 md:col-span-1 flex justify-end">
-            <IconButton title="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+            <IconButton title="Move up" disabled={!canMove || i === 0} onClick={() => move(i, -1)}>
               <ArrowUp className="size-4" />
             </IconButton>
-            <IconButton title="Move down" disabled={i === rows.length - 1} onClick={() => move(i, 1)}>
+            <IconButton title="Move down" disabled={!canMove || i === rows.length - 1} onClick={() => move(i, 1)}>
               <ArrowDown className="size-4" />
             </IconButton>
             <IconButton title="Remove" onClick={() => set(rows.filter((_, j) => j !== i))}>
@@ -108,15 +159,93 @@ function PriceTable({ value, onChange }: { value: string; onChange: (json: strin
           </div>
         </div>
       ))}
+      {!shown.length && <div className="text-xs text-muted px-1">No prices match.</div>}
+      {!showAll && !q && shown.length > PAGE && (
+        <button className="text-xs text-accent" onClick={() => setShowAll(true)}>
+          Show all {shown.length} rows
+        </button>
+      )}
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" icon={<Plus className="size-4" />} onClick={() => set([...rows, { model: "", input: 0, cache_read: 0, cache_write: 0, output: 0 }])}>
+        <Button
+          size="sm"
+          variant="outline"
+          icon={<Plus className="size-4" />}
+          onClick={() => {
+            setFilter("all");
+            setSearch("");
+            set([{ model: "", input: 0, cache_read: 0, cache_write: 0, output: 0, source: "manual" }, ...rows]);
+          }}
+        >
           Add price
         </Button>
-        <Button size="sm" variant="ghost" icon={<RotateCcw className="size-4" />} onClick={() => set(DEFAULT_PRICES)}>
-          Reset to defaults
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<RotateCcw className="size-4" />}
+          disabled={!manualCount}
+          onClick={async () => {
+            if (!(await ask({ title: "Remove manual prices", message: `Remove the ${manualCount} manual row(s) and use only the automatic prices?`, confirmLabel: "Remove", danger: true }))) return;
+            const auto = rows.filter((r) => !isManual(r));
+            set(auto.length ? auto : builtin);
+          }}
+        >
+          Remove manual prices
         </Button>
       </div>
     </div>
+  );
+}
+
+/** The Usage prices card: update status, "Update now" and the table. */
+function UsagePrices({ value, saved, onChange }: { value: string; saved: string; onChange: (json: string) => void }) {
+  const status = useQuery({ queryKey: ["price-status"], queryFn: () => api.get<PriceStatus>("/api/usage/prices") });
+  const { busy, run } = useAction();
+  const qc = useQueryClient();
+  const st = status.data;
+  const updateNow = async () => {
+    const r = await run(async () => {
+      // Save edits first so manual rows are kept by the update.
+      if (cleanPrices(value) !== cleanPrices(saved)) await api.put("/api/settings", { usage_prices: cleanPrices(value) });
+      return api.post<PriceStatus & { usage_prices: string }>("/api/usage/prices/update");
+    }, "Prices updated");
+    if (r) {
+      onChange(r.usage_prices);
+      qc.setQueryData(["price-status"], r);
+      qc.setQueryData(["settings"], (old: S | undefined) => (old ? { ...old, usage_prices: r.usage_prices } : old));
+    } else {
+      status.refetch();
+    }
+  };
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium">Usage prices</div>
+          <div className="text-xs text-muted mt-0.5">
+            USD per 1M tokens, used on the Usage page for runs whose CLI reports no cost (Codex). Claude Code reports its own cost. A row with the model's exact name wins;
+            otherwise the first matching pattern (<code>*</code> matches anything).
+          </div>
+        </div>
+        <Button size="sm" variant="outline" icon={<RefreshCw className="size-4" />} loading={busy} onClick={updateNow}>
+          Update now
+        </Button>
+      </div>
+      <div className="rounded-lg bg-panel-2 px-3 py-2 text-xs space-y-1">
+        <div>
+          Updated automatically every day from the{" "}
+          <a className="text-accent" href={st?.source_url} target="_blank" rel="noreferrer">
+            {st?.source ?? "public price list"}
+          </a>
+          , covering all current Claude and OpenAI models. Rows you add or edit are marked <b>manual</b> and never overwritten.
+        </div>
+        <div className="text-muted">
+          {st?.updated_at ? <>Last updated {timeAgo(st.updated_at)}</> : <>Not updated yet: using the prices shipped with this version</>}
+          {st?.checked_at && st.checked_at !== st.updated_at && <> · last try {timeAgo(st.checked_at)}</>}
+        </div>
+        {st?.error && <div className="text-danger">Last update failed: {st.error}</div>}
+      </div>
+      <PriceTable value={value} onChange={onChange} builtin={st?.builtin ?? []} />
+    </Card>
   );
 }
 
@@ -345,16 +474,7 @@ export default function Settings() {
           </Field>
         </Card>
 
-        <Card className="p-5 space-y-4">
-          <div>
-            <div className="font-medium">Usage prices</div>
-            <div className="text-xs text-muted mt-0.5">
-              Used on the Usage page to estimate the cost of runs whose CLI reports no price (Codex). Claude Code reports its own cost. Prices are USD per 1M tokens; the first row whose
-              model pattern matches wins, and <code>*</code> matches anything.
-            </div>
-          </div>
-          <PriceTable value={v.usage_prices ?? ""} onChange={(s) => up("usage_prices", s)} />
-        </Card>
+        <UsagePrices value={v.usage_prices ?? ""} saved={q.data?.usage_prices ?? ""} onChange={(s) => up("usage_prices", s)} />
 
         <Card className="p-5 space-y-4">
           <div className="font-medium">Live browser</div>

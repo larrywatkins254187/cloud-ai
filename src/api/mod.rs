@@ -84,6 +84,8 @@ pub fn router() -> Router<St> {
         .route("/api/settings", get(system::get_settings).put(system::put_settings))
         .route("/api/system", get(system::status))
         .route("/api/usage/refresh", post(system::refresh_usage))
+        .route("/api/usage/prices", get(system::prices_status))
+        .route("/api/usage/prices/update", post(system::prices_update))
         .route("/api/usage/report", get(usage::report))
         .route("/api/events", get(system::events))
         .route("/api/models", get(system::models))

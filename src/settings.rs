@@ -29,14 +29,9 @@ pub const DEFAULTS: &[(&str, &str)] = &[
 ];
 
 /// Estimated prices in USD per 1M tokens, used on the Usage page when a CLI does not
-/// report a cost (Codex). The first row whose pattern matches the model wins; `*` is a wildcard.
-pub const DEFAULT_PRICES: &str = r#"[
-  {"model":"*-mini*","input":0.25,"cache_read":0.025,"cache_write":0,"output":2},
-  {"model":"gpt-5.2*","input":1.75,"cache_read":0.175,"cache_write":0,"output":14},
-  {"model":"gpt-5.1*","input":1.25,"cache_read":0.125,"cache_write":0,"output":10},
-  {"model":"gpt-5*","input":1.25,"cache_read":0.125,"cache_write":0,"output":10},
-  {"model":"*","input":1.75,"cache_read":0.175,"cache_write":0,"output":14}
-]"#;
+/// report a cost (Codex). A row with the model's exact name wins, otherwise the first
+/// row whose pattern matches; `*` is a wildcard. Updated daily, see `prices`.
+pub const DEFAULT_PRICES: &str = crate::prices::BUILTIN;
 
 /// Settings never sent back to the browser in clear text.
 pub const SECRET_KEYS: &[&str] = &["telegram_token"];

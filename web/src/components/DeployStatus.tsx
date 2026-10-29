@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api } from "../lib/api";
 import { duration, timeAgo } from "../lib/format";
-import type { Deploy } from "../lib/types";
-import { Badge, Card, cx } from "./ui";
+import type { ChatDeploy, Deploy } from "../lib/types";
+import { cx } from "./ui";
 
 export function deployTone(s: string) {
   return s === "success" ? "ok" : s === "failed" ? "danger" : "accent";
@@ -85,46 +85,31 @@ export function DeployBanner({ projectId, enabled }: { projectId: number; enable
   );
 }
 
-type ActiveDeploy = Deploy & { project_name: string };
-
-/** Dashboard card: running deploys and the latest ones across projects. */
-export function DeploysCard() {
-  const q = useQuery({ queryKey: ["active-deploys"], queryFn: () => api.get<ActiveDeploy[]>("/api/deploys/active"), refetchInterval: 30_000 });
-  const list = q.data ?? [];
-  const running = list.filter((d) => d.status === "running");
-  useTicker(running.length > 0);
-  if (!list.length) return null;
-  const rows = [...running, ...list.filter((d) => d.status !== "running")].slice(0, 6);
+/** Icon for a chat's latest deploy: shipped, deploying, rolled back or failed. */
+export function ChatDeployIcon({ d }: { d: ChatDeploy }) {
+  const when = d.status === "running" ? "now" : timeAgo(d.finished_at ?? d.created_at);
+  const sha = d.commit_sha ? ` · ${d.commit_sha.slice(0, 8)}` : "";
+  const rollback = d.kind === "rollback";
+  const label =
+    d.status === "running"
+      ? rollback ? "Rolling back" : "Deploying"
+      : d.status === "success"
+        ? rollback ? "Rolled back" : "Deployed"
+        : rollback ? "Rollback failed" : "Deploy failed";
+  const title = `${label} ${when}${sha}`;
+  const icon =
+    d.status === "running" ? (
+      <Loader2 className="size-4 animate-spin text-accent" />
+    ) : d.status === "failed" ? (
+      <XCircle className="size-4 text-danger" />
+    ) : rollback ? (
+      <RotateCcw className="size-4 text-warn" />
+    ) : (
+      <Rocket className="size-4 text-ok" />
+    );
   return (
-    <Card>
-      <div className="px-4 py-3 border-b border-border text-sm font-medium flex items-center gap-2">
-        <Rocket className="size-4" /> Deploys
-        {running.length > 0 && <Badge tone="accent">{running.length} running</Badge>}
-      </div>
-      <div className="divide-y divide-border">
-        {rows.map((d) => (
-          <Link
-            key={d.id}
-            to={`/projects/${d.project_id}?tab=${d.status === "running" ? "deploy" : "history"}`}
-            className={cx("flex items-center gap-3 px-4 py-3 hover:bg-panel-2", d.status === "running" && "bg-accent-soft/40")}
-          >
-            <StatusIcon status={d.status} />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm truncate font-medium">{d.project_name}</div>
-              <div className="text-xs text-muted truncate">
-                {d.kind === "rollback" && (
-                  <>
-                    <RotateCcw className="inline size-3" /> rollback ·{" "}
-                  </>
-                )}
-                {d.commit_sha ? <code>{d.commit_sha.slice(0, 8)}</code> : "—"} · {d.triggered_by} ·{" "}
-                {d.status === "running" ? `running ${duration(d.created_at)}` : timeAgo(d.finished_at ?? d.created_at)}
-              </div>
-            </div>
-            <Badge tone={deployTone(d.status) as any}>{d.status}</Badge>
-          </Link>
-        ))}
-      </div>
-    </Card>
+    <span className="shrink-0 inline-flex" title={title} aria-label={title} role="img">
+      {icon}
+    </span>
   );
 }

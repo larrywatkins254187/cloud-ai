@@ -254,6 +254,14 @@ ALTER TABLE chats ADD COLUMN read_only INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE chats ADD COLUMN base_sha TEXT;
 ALTER TABLE chats ADD COLUMN context TEXT;
 "#,
+    // v6: the chat a deploy shipped (auto-deploys, and rollbacks of them). Older
+    // auto-deploys are linked from their "auto (chat #N)" label.
+    r#"
+ALTER TABLE deploys ADD COLUMN chat_id INTEGER;
+UPDATE deploys SET chat_id = CAST(substr(triggered_by, 13, length(triggered_by) - 13) AS INTEGER)
+  WHERE triggered_by LIKE 'auto (chat #%)';
+CREATE INDEX deploys_chat ON deploys(chat_id, id);
+"#,
 ];
 
 impl Db {

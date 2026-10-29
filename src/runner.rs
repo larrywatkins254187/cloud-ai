@@ -30,25 +30,45 @@ pub struct RunnerState {
 }
 
 /// Remember the latest plan usage reported by a CLI, in memory and in the DB
-/// so the dashboard still has it after a restart.
+/// so the dashboard still has it after a restart. It is tagged with the account
+/// the CLI is logged in with now, so it is never shown for another account.
 pub fn set_rate_limits(st: &St, tool: &str, mut v: Value) {
     if v.is_null() {
         return;
     }
+    let account = crate::plan_usage::login(tool).id;
+    if tool == "claude" && v.get("source").and_then(|s| s.as_str()) != Some("api") {
+        // A run's rate_limit_event: fold it into what we know about this account.
+        let prev = current_rate_limits(st, tool, &account);
+        v = crate::plan_usage::merge_claude_event(prev.as_ref(), &v);
+    }
     if let Some(o) = v.as_object_mut() {
         o.insert("updatedAt".into(), json!(crate::util::now()));
+        o.insert("account".into(), json!(account));
     }
     crate::store::set_cli_info(st, &format!("rate_limits_{tool}"), &v);
     st.runner.rate_limits.lock().unwrap().insert(tool.into(), v);
 }
 
-/// Plan usage per CLI: what the CLIs reported since start, else the saved copy.
+/// Forget a CLI's plan usage (its account changed or logged out).
+pub fn clear_rate_limits(st: &St, tool: &str) {
+    st.runner.rate_limits.lock().unwrap().remove(tool);
+    crate::store::set_cli_info(st, &format!("rate_limits_{tool}"), &Value::Null);
+}
+
+/// The saved usage of `tool`, if it belongs to `account`.
+fn current_rate_limits(st: &St, tool: &str, account: &str) -> Option<Value> {
+    let mem = st.runner.rate_limits.lock().unwrap().get(tool).cloned();
+    let v = mem.unwrap_or_else(|| crate::store::get_cli_info(&st.db, &format!("rate_limits_{tool}")));
+    (!v.is_null() && v["account"].as_str() == Some(account) && !account.is_empty()).then_some(v)
+}
+
+/// Plan usage per CLI, only for the account each CLI is logged in with now.
 pub fn rate_limits(st: &St) -> Value {
     let mut out = serde_json::Map::new();
-    let mem = st.runner.rate_limits.lock().unwrap().clone();
     for tool in ["claude", "codex"] {
-        let v = mem.get(tool).cloned().unwrap_or_else(|| crate::store::get_cli_info(&st.db, &format!("rate_limits_{tool}")));
-        if !v.is_null() {
+        let account = crate::plan_usage::login(tool).id;
+        if let Some(v) = current_rate_limits(st, tool, &account) {
             out.insert(tool.into(), v);
         }
     }
@@ -375,7 +395,7 @@ fn finish(st: &St, run_id: i64, mut outcome: TurnOutcome) -> Result<()> {
                     let label = format!("auto (chat #{})", chat.id);
                     // Report into the chat's Telegram topic when it has one.
                     let thread = store::get_chat(&st.db, chat.id).ok().and_then(|c| c.tg_topic_id).filter(|t| *t > 0);
-                    crate::deploy::start(st, project.id, &label, None, thread);
+                    crate::deploy::start(st, project.id, &label, None, thread, Some(chat.id));
                 }
             }
         }

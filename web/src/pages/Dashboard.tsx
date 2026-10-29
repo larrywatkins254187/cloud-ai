@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Bot, Cpu, Hourglass, MemoryStick, MessageSquare, Play, RefreshCw } from "lucide-react";
-import { DeploysCard } from "../components/DeployStatus";
+import { ChatDeployIcon } from "../components/DeployStatus";
 import { ErrorState, Loadable, SkeletonCards, SkeletonList } from "../components/Loadable";
 import { Link } from "react-router";
 import { Badge, Card, cx, Empty, PageHeader, StatusDot } from "../components/ui";
@@ -57,39 +57,93 @@ function windowLabel(mins: number | undefined, fallback: string) {
   return `${mins}-minute window`;
 }
 
-const STALE_MS = 10 * 60 * 1000;
+/** Plan names come lower-case from the CLIs ("max", "plus"). */
+export function planName(p?: string | null) {
+  if (!p) return "";
+  return p.charAt(0).toUpperCase() + p.slice(1);
+}
 
-function PlanUsage({ limits }: { limits: any }) {
+type Login = { method: "subscription" | "api_key" | "none"; email: string | null; plan: string | null; logged_in: boolean };
+
+/** Usage older than this is fetched again when the dashboard shows it. */
+const STALE_MS = 5 * 60 * 1000;
+/** This page asks the server for fresh usage at most this often on its own. */
+const AUTO_GAP_MS = 60 * 1000;
+
+const CLAUDE_WINDOWS: [string, string][] = [
+  ["five_hour", "5-hour window"],
+  ["seven_day", "Weekly (all models)"],
+  ["seven_day_sonnet", "Weekly (Sonnet)"],
+  ["seven_day_opus", "Weekly (Opus)"],
+];
+
+function UsageHeader({ name, plan, email, at }: { name: string; plan?: string | null; email?: string | null; at?: string }) {
+  return (
+    <div className="text-xs flex justify-between gap-2">
+      <span className="font-medium truncate">
+        {name}
+        {plan ? ` · ${planName(plan)}` : ""}
+        {email && <span className="font-normal text-muted"> · {email}</span>}
+      </span>
+      {at && <span className="text-muted shrink-0">updated {timeAgo(at)}</span>}
+    </div>
+  );
+}
+
+function PlanUsage({ limits, errors, logins }: { limits: any; errors?: Record<string, string>; logins?: { claude: Login; codex: Login } }) {
   const qc = useQueryClient();
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const claude = limits?.claude?.unifiedWindows;
+  const claude = limits?.claude;
   const codex = limits?.codex;
+  const claudeAt = claude?.updatedAt ? new Date(claude.updatedAt).getTime() : 0;
   const codexAt = codex?.updatedAt ? new Date(codex.updatedAt).getTime() : 0;
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const r = await api.post<{ rate_limits: any; error?: string }>("/api/usage/refresh");
-      setError(r.error ?? null);
-      qc.setQueryData(["system"], (old: any) => (old ? { ...old, rate_limits: r.rate_limits } : old));
+      const r = await api.post<{ rate_limits: any; usage_errors?: Record<string, string>; logins?: any }>("/api/usage/refresh");
+      qc.setQueryData(["system"], (old: any) =>
+        old
+          ? {
+              ...old,
+              rate_limits: r.rate_limits,
+              usage_errors: r.usage_errors ?? {},
+              cli: old.cli && r.logins ? { ...old.cli, logins: r.logins } : old.cli,
+            }
+          : old,
+      );
     } catch (e: any) {
-      setError(e.message);
+      qc.setQueryData(["system"], (old: any) => (old ? { ...old, usage_errors: { ...(old.usage_errors ?? {}), request: e.message } } : old));
     } finally {
       setRefreshing(false);
     }
   }, [qc]);
 
-  // Codex only reports usage while it runs, so ask for it when ours is old.
-  const asked = useRef(false);
+  // Ask for fresh usage when what we have is old or missing (also after a login
+  // change, when the server drops the previous account's usage).
+  const lastAsk = useRef(0);
   useEffect(() => {
-    if (limits && !asked.current && Date.now() - codexAt > STALE_MS) {
-      asked.current = true;
+    if (!limits || refreshing) return;
+    const stale = (at: number) => Date.now() - at > STALE_MS;
+    const claudeIn = logins ? logins.claude.method === "subscription" : true;
+    const codexIn = logins ? logins.codex.method === "subscription" : true;
+    const want = (claudeIn && stale(claudeAt)) || (codexIn && stale(codexAt));
+    if (want && Date.now() - lastAsk.current > AUTO_GAP_MS) {
+      lastAsk.current = Date.now();
       refresh();
     }
-  }, [limits, codexAt, refresh]);
+  }, [limits, claudeAt, codexAt, logins, refreshing, refresh]);
 
-  if (!claude && !codex && !refreshing && !error) return null;
+  const showClaude = !!claude || (logins ? logins.claude.method === "subscription" : true);
+  const showCodex = !!codex || (logins ? logins.codex.method === "subscription" : true);
+  if (!showClaude && !showCodex) return null;
+  const empty = (tool: "claude" | "codex") => {
+    const err = errors?.[tool] ?? errors?.request;
+    if (refreshing) return `Loading ${tool === "claude" ? "Claude" : "Codex"} usage…`;
+    if (err) return `Not available: ${err}`;
+    return "No usage reported yet";
+  };
+  const claudeWindows = CLAUDE_WINDOWS.filter(([k]) => claude?.unifiedWindows?.[k]);
   return (
     <Card className="p-4 space-y-3">
       <div className="flex items-center justify-between">
@@ -98,30 +152,44 @@ function PlanUsage({ limits }: { limits: any }) {
           <RefreshCw className={cx("size-3.5", refreshing && "animate-spin")} />
         </button>
       </div>
-      {claude && (
+      {showClaude && (
         <div className="space-y-2">
-          <div className="text-xs font-medium">Claude</div>
-          {claude.five_hour && <UsageBar label="5-hour window" pct={(claude.five_hour.utilization ?? 0) * 100} resets={claude.five_hour.resetsAt} />}
-          {claude.seven_day && <UsageBar label="Weekly" pct={(claude.seven_day.utilization ?? 0) * 100} resets={claude.seven_day.resetsAt} />}
+          <UsageHeader name="Claude" plan={logins?.claude.plan} email={logins?.claude.email} at={claude?.updatedAt} />
+          {claudeWindows.map(([k, label]) => (
+            <UsageBar key={k} label={label} pct={(claude.unifiedWindows[k].utilization ?? 0) * 100} resets={claude.unifiedWindows[k].resetsAt} />
+          ))}
+          {!claudeWindows.length && <div className="text-xs text-muted">{empty("claude")}</div>}
         </div>
       )}
-      <div className="space-y-2">
-        <div className="text-xs font-medium flex justify-between">
-          <span>Codex{codex?.planType ? ` · ${codex.planType}` : ""}</span>
-          {codexAt > 0 && <span className="font-normal text-muted">updated {timeAgo(codex.updatedAt)}</span>}
+      {showCodex && (
+        <div className="space-y-2">
+          <UsageHeader name="Codex" plan={codex?.planType ?? logins?.codex.plan} email={logins?.codex.email} at={codex?.updatedAt} />
+          {codex?.primary && <UsageBar label={windowLabel(codex.primary.windowDurationMins, "Short window")} pct={codex.primary.usedPercent ?? 0} resets={codex.primary.resetsAt} />}
+          {codex?.secondary && <UsageBar label={windowLabel(codex.secondary.windowDurationMins, "Weekly")} pct={codex.secondary.usedPercent ?? 0} resets={codex.secondary.resetsAt} />}
+          {codex?.credits?.hasCredits && !codex.credits.unlimited && codex.credits.balance != null && (
+            <div className="text-xs text-muted">Credits left: {codex.credits.balance}</div>
+          )}
+          {!codex?.primary && !codex?.secondary && <div className="text-xs text-muted">{empty("codex")}</div>}
         </div>
-        {codex?.primary && <UsageBar label={windowLabel(codex.primary.windowDurationMins, "Short window")} pct={codex.primary.usedPercent ?? 0} resets={codex.primary.resetsAt} />}
-        {codex?.secondary && <UsageBar label={windowLabel(codex.secondary.windowDurationMins, "Weekly")} pct={codex.secondary.usedPercent ?? 0} resets={codex.secondary.resetsAt} />}
-        {codex?.credits?.hasCredits && !codex.credits.unlimited && codex.credits.balance != null && (
-          <div className="text-xs text-muted">Credits left: {codex.credits.balance}</div>
-        )}
-        {!codex?.primary && !codex?.secondary && (
-          <div className="text-xs text-muted" title={error ?? undefined}>
-            {refreshing ? "Loading Codex usage…" : error ? "Not available — is Codex installed and logged in with ChatGPT?" : "No usage reported yet"}
-          </div>
-        )}
-      </div>
+      )}
     </Card>
+  );
+}
+
+function CliAccount({ login }: { login?: Login }) {
+  if (!login) return null;
+  if (login.method === "none")
+    return (
+      <Link to="/admin/cli" className="text-xs text-warn">
+        Not logged in
+      </Link>
+    );
+  if (login.method === "api_key") return <div className="text-xs text-muted">API key</div>;
+  return (
+    <div className="text-xs text-muted truncate" title={login.email ?? undefined}>
+      {login.email ?? "Logged in"}
+      {login.plan && ` · ${planName(login.plan)}`}
+    </div>
   );
 }
 
@@ -141,6 +209,7 @@ export function ChatRow({ c, showProject }: { c: Chat & { project_name?: string 
       {c.status === "error" && <Badge tone="danger">error</Badge>}
       {c.read_only && <Badge>read-only</Badge>}
       {c.schedule_id && <Badge>scheduled</Badge>}
+      {c.deploy && <ChatDeployIcon d={c.deploy} />}
     </Link>
   );
 }
@@ -213,7 +282,6 @@ export default function Dashboard() {
               </div>
             </Card>
           )}
-          <DeploysCard />
           {(queue.data?.runs?.length ?? 0) > 0 && (
             <Card>
               <div className="px-4 py-3 border-b border-border text-sm font-medium">Running & queued</div>
@@ -252,19 +320,25 @@ export default function Dashboard() {
           </Card>
         </div>
         <div className="space-y-4">
-          <PlanUsage limits={s?.rate_limits} />
+          <PlanUsage limits={s?.rate_limits} errors={s?.usage_errors} logins={s?.cli?.logins} />
           {s?.cli && (
             <Card className="p-4 space-y-2 text-sm">
               <div className="font-medium flex items-center gap-2">
                 <Bot className="size-4" /> CLIs
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Claude Code</span>
-                <span>{s.cli.claude_version ?? "—"}</span>
+              <div>
+                <div className="flex justify-between">
+                  <span className="text-muted">Claude Code</span>
+                  <span>{s.cli.claude_version ?? "—"}</span>
+                </div>
+                <CliAccount login={s.cli.logins?.claude} />
               </div>
-              <div className="flex justify-between">
-                <span className="text-muted">Codex</span>
-                <span>{s.cli.codex_version ?? "—"}</span>
+              <div>
+                <div className="flex justify-between">
+                  <span className="text-muted">Codex</span>
+                  <span>{s.cli.codex_version ?? "—"}</span>
+                </div>
+                <CliAccount login={s.cli.logins?.codex} />
               </div>
               <Link to="/admin/cli" className="text-accent text-xs">
                 Manage logins & updates →

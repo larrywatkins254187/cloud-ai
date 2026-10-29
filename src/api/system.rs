@@ -31,6 +31,7 @@ pub async fn status(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Js
             "ram_guard_mb": settings::get_i64(&st.db, "ram_guard_mb"),
         },
         "rate_limits": crate::runner::rate_limits(&st),
+        "usage_errors": crate::plan_usage::errors(),
         "version": env!("CARGO_PKG_VERSION"),
         "timezone": settings::get(&st.db, "timezone"),
     });
@@ -40,29 +41,34 @@ pub async fn status(State(st): State<St>, AuthUser(u): AuthUser) -> ApiResult<Js
             "claude_account": get_cli_info(&st.db, "claude_account"),
             "codex_version": get_cli_info(&st.db, "codex_version"),
             "codex_account": get_cli_info(&st.db, "codex_account"),
+            "logins": logins(),
         });
         v["telegram_configured"] = json!(!settings::get(&st.db, "telegram_token").is_empty());
     }
     Ok(Json(v))
 }
 
-/// Fetch fresh plan usage from Codex now (at most once a minute).
+/// Fetch fresh plan usage from both CLIs now (each at most every 30 seconds,
+/// right away after an account change).
 pub async fn refresh_usage(State(st): State<St>, AuthUser(_): AuthUser) -> ApiResult<Json<Value>> {
-    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    let recent = {
-        let mut l = LAST.lock().unwrap();
-        let recent = l.map(|t| t.elapsed() < std::time::Duration::from_secs(60)).unwrap_or(false);
-        if !recent {
-            *l = Some(std::time::Instant::now());
-        }
-        recent
-    };
-    if !recent {
-        if let Err(e) = crate::agents::codex::refresh_rate_limits(&st).await {
-            return Ok(Json(json!({"rate_limits": crate::runner::rate_limits(&st), "error": format!("{e:#}")})));
-        }
-    }
-    Ok(Json(json!({"rate_limits": crate::runner::rate_limits(&st)})))
+    let changed = crate::plan_usage::check_accounts(&st).await;
+    let (a, b) = tokio::join!(
+        crate::plan_usage::refresh(&st, "claude", changed.contains(&"claude")),
+        crate::plan_usage::refresh(&st, "codex", changed.contains(&"codex"))
+    );
+    let errors = crate::plan_usage::errors();
+    let error = [a.err(), b.err()].into_iter().flatten().map(|e| format!("{e:#}")).collect::<Vec<_>>().join("; ");
+    Ok(Json(json!({
+        "rate_limits": crate::runner::rate_limits(&st),
+        "usage_errors": errors,
+        "logins": logins(),
+        "error": if error.is_empty() { Value::Null } else { json!(error) },
+    })))
+}
+
+/// Who each CLI is logged in as, read from the CLIs' own login files.
+fn logins() -> Value {
+    json!({"claude": crate::plan_usage::claude_login().json(), "codex": crate::plan_usage::codex_login().json()})
 }
 
 pub async fn events(State(st): State<St>, AdminUser(_): AdminUser) -> ApiResult<Json<Value>> {
@@ -92,4 +98,17 @@ pub async fn telegram_test(State(st): State<St>, AdminUser(_): AdminUser) -> Api
         Ok(me) => Ok(Json(json!({"ok": true, "bot": me}))),
         Err(e) => Ok(Json(json!({"ok": false, "error": format!("{e:#}")}))),
     }
+}
+
+/// The price table's update status (admins).
+pub async fn prices_status(State(st): State<St>, AdminUser(_): AdminUser) -> ApiResult<Json<Value>> {
+    Ok(Json(crate::prices::status(&st)))
+}
+
+/// Download the latest prices now (admins). Manual rows are kept.
+pub async fn prices_update(State(st): State<St>, AdminUser(_): AdminUser) -> ApiResult<Json<Value>> {
+    crate::prices::update(&st).await.map_err(|e| ApiError::bad(format!("{e:#}")))?;
+    let mut v = crate::prices::status(&st);
+    v["usage_prices"] = json!(settings::get(&st.db, "usage_prices"));
+    Ok(Json(v))
 }

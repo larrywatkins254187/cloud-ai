@@ -948,7 +948,9 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
         }
         ["dc", pid] => {
             let pid: i64 = pid.parse()?;
-            let id = crate::deploy::start(st, pid, &by, None, thread).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
+            // Asked from a chat's topic: the deploy ships that chat's changes.
+            let chat = thread.and_then(|t| chat_for_topic(st, t)).filter(|c| c.project_id == pid).map(|c| c.id);
+            let id = crate::deploy::start(st, pid, &by, None, thread, chat).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
             edit(st, message_id, &format!("🚀 Deploy #{id} started by {}", html_escape(&by)), None).await;
             Ok("Deploy started".into())
         }
@@ -969,7 +971,7 @@ async fn on_callback(st: &St, cb: &Value) -> Result<String> {
             let did: i64 = did.parse()?;
             let d = store::get_deploy(&st.db, did)?;
             let sha = d.prev_sha.ok_or_else(|| anyhow!("no previous version known"))?;
-            crate::deploy::start(st, d.project_id, &by, Some(sha), thread).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
+            crate::deploy::start(st, d.project_id, &by, Some(sha), thread, d.chat_id).ok_or_else(|| anyhow!("A deploy is already running for this project"))?;
             edit(st, message_id, &format!("↩️ Rollback started by {}", html_escape(&by)), None).await;
             Ok("Rollback started".into())
         }
