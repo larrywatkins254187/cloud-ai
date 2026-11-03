@@ -45,6 +45,7 @@ pub fn router() -> Router<St> {
         .route("/api/chats/{id}/context", get(chats::context))
         .route("/api/chats/{id}/changes", get(chats::changes))
         .route("/api/chats/{id}/changes/diff", get(chats::change_diff))
+        .route("/api/chats/{id}/resume-schedule", post(chats::resume_schedule))
         .route("/api/runs/{id}/cancel", post(chats::cancel_run))
         .route("/api/requests/{id}/answer", post(chats::answer))
         .route("/api/requests/pending", get(chats::pending))

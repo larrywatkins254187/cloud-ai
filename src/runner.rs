@@ -351,7 +351,13 @@ fn finish(st: &St, run_id: i64, mut outcome: TurnOutcome) -> Result<()> {
     expire_requests_of_run(st, run_id);
     if let Some(err) = &outcome.error {
         if outcome.status == "error" {
-            let m = insert_message(&st.db, run.chat_id, Some(run_id), "error", &json!({ "text": err }))?;
+            let tool = get_chat(&st.db, run.chat_id)?.tool;
+            let mut data = json!({ "text": err });
+            if let Some(limit) = crate::limits::detect(st, &tool, err) {
+                // The chat page offers to schedule a continuation when the window resets.
+                data["limit"] = limit;
+            }
+            let m = insert_message(&st.db, run.chat_id, Some(run_id), "error", &data)?;
             st.emit_project(get_chat(&st.db, run.chat_id)?.project_id, Event::Message { message: m });
         }
     }

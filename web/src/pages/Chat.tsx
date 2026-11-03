@@ -25,6 +25,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMem
 import { Link, useNavigate, useParams } from "react-router";
 import { AgentPicker } from "../components/AgentPicker";
 import { Composer } from "../components/Composer";
+import { LimitCard } from "../components/LimitCard";
 import { Markdown } from "../components/Markdown";
 import { RequestCard } from "../components/RequestCard";
 import { Todos, ToolCard } from "../components/ToolCard";
@@ -329,6 +330,7 @@ export default function Chat() {
     setPanelTab("agents");
     setPanel(true);
   };
+  const limit = useMemo(() => latestLimit(msgsQ.data?.messages ?? []), [msgsQ.data]);
 
   const stickToBottom = useCallback(() => {
     const el = scroller.current;
@@ -545,6 +547,11 @@ export default function Chat() {
                   </ToolCard>
                 );
               })()
+            ) : it.m.id === limit?.msg.id && !running ? (
+              <div key={it.m.id} className="space-y-2">
+                <MsgView m={it.m} />
+                <LimitCard chat={chat} msg={limit.msg} lastPrompt={limit.lastPrompt} didWork={limit.didWork} />
+              </div>
             ) : (
               <MsgView key={it.m.id} m={it.m} />
             ),
@@ -620,6 +627,27 @@ export default function Chat() {
       )}
     </div>
   );
+}
+
+/**
+ * The latest "usage limit reached" error, if nothing was sent after it.
+ * Also returns the prompt that hit the limit and whether the agent got any work done.
+ */
+function latestLimit(messages: Msg[]) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.kind === "user") return null;
+    if (m.kind === "error" && m.data?.limit) {
+      let didWork = false;
+      for (let j = i - 1; j >= 0; j--) {
+        const p = messages[j];
+        if (p.kind === "user") return { msg: m, lastPrompt: (p.data?.text as string) ?? "", didWork };
+        if (p.kind === "assistant" || p.kind === "tool_use") didWork = true;
+      }
+      return { msg: m, lastPrompt: "", didWork };
+    }
+  }
+  return null;
 }
 
 function MenuBtn({ icon, children, onClick, danger }: { icon: React.ReactNode; children: React.ReactNode; onClick: () => void; danger?: boolean }) {

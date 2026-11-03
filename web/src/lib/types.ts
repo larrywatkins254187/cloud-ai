@@ -71,6 +71,8 @@ export interface Chat {
   waiting_background?: boolean;
   /** The latest deploy of this chat's changes (chat lists only). */
   deploy?: ChatDeploy | null;
+  /** Not-yet-fired "continue after the usage limit" schedule. */
+  resume_schedule?: { id: number; next_run_at: string; next_run_local: string } | null;
 }
 
 export interface ChatDeploy {

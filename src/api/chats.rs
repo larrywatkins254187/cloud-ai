@@ -208,7 +208,93 @@ pub async fn get_one(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path
     v["active_runs"] = json!(runs);
     v["pending_requests"] = json!(requests);
     v["waiting_background"] = json!(runner::is_waiting(&st, chat.id, &chat.tool).await);
+    v["resume_schedule"] = pending_resume(&st, id);
     Ok(Json(v))
+}
+
+const RESUME_PREFIX: &str = "⏳ Continue after limit";
+
+/// The not-yet-fired "continue after the usage limit" schedule of a chat, if any.
+fn pending_resume(st: &St, chat_id: i64) -> Value {
+    let row = st.db.conn().query_row(
+        "SELECT id, next_run_at FROM schedules WHERE chat_id=?1 AND kind='once' AND mode='continue' AND enabled=1
+         AND next_run_at IS NOT NULL AND name LIKE ?2 ORDER BY id DESC LIMIT 1",
+        params![chat_id, format!("{RESUME_PREFIX}%")],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+    );
+    match row {
+        Ok((id, next)) => {
+            let local = chrono::DateTime::parse_from_rfc3339(&next)
+                .map(|t| t.with_timezone(&settings::tz(&st.db)).format("%a %Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default();
+            json!({"id": id, "next_run_at": next, "next_run_local": local})
+        }
+        Err(_) => Value::Null,
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ResumeBody {
+    /// Panel-local time, YYYY-MM-DDTHH:MM.
+    run_at: String,
+    prompt: String,
+}
+
+/// Schedule this chat to continue once the plan's usage limit resets.
+pub async fn resume_schedule(State(st): State<St>, AuthUser(u): AuthUser, Path(id): Path<i64>, Json(b): Json<ResumeBody>) -> ApiResult<Json<Value>> {
+    let chat = chat_for(&st, &u, id)?;
+    if b.prompt.trim().is_empty() {
+        return Err(ApiError::bad("prompt required"));
+    }
+    let mut s = store::Schedule {
+        id: 0,
+        project_id: chat.project_id,
+        user_id: Some(u.id),
+        name: format!("{RESUME_PREFIX} · {}", chat.title),
+        enabled: true,
+        kind: "once".into(),
+        run_at: Some(b.run_at.trim().to_string()),
+        time_of_day: None,
+        weekdays: None,
+        cron: None,
+        tool: chat.tool.clone(),
+        model: chat.model.clone(),
+        effort: chat.effort.clone(),
+        permission_mode: chat.permission_mode.clone(),
+        mode: "continue".into(),
+        chat_id: Some(chat.id),
+        prompts: json!([b.prompt.trim()]),
+        use_worktree: false,
+        auto_deploy: chat.auto_deploy,
+        last_run_at: None,
+        next_run_at: None,
+        created_at: String::new(),
+    };
+    let next = crate::scheduler::next_after(&s, settings::tz(&st.db), chrono::Utc::now()).map_err(|e| ApiError::bad(e.to_string()))?;
+    if next.is_none() {
+        return Err(ApiError::bad("pick a time in the future"));
+    }
+    let sid = {
+        let c = st.db.conn();
+        // Only one pending continuation per chat: replace an earlier one.
+        c.execute(
+            "DELETE FROM schedules WHERE chat_id=?1 AND kind='once' AND mode='continue' AND enabled=1 AND name LIKE ?2",
+            params![chat.id, format!("{RESUME_PREFIX}%")],
+        )?;
+        c.execute(
+            "INSERT INTO schedules(project_id,user_id,name,enabled,kind,run_at,tool,model,effort,permission_mode,mode,chat_id,prompts,use_worktree,auto_deploy,created_at)
+             VALUES(?1,?2,?3,1,'once',?4,?5,?6,?7,?8,'continue',?9,?10,0,?11,?12)",
+            params![
+                s.project_id, u.id, s.name, s.run_at, s.tool, s.model, s.effort, s.permission_mode, chat.id,
+                s.prompts.to_string(), s.auto_deploy as i64, now()
+            ],
+        )?;
+        c.last_insert_rowid()
+    };
+    s.id = sid;
+    crate::scheduler::recompute(&st, sid)?;
+    runner::emit_chat(&st, chat.id);
+    Ok(Json(json!({"schedule_id": sid, "resume_schedule": pending_resume(&st, chat.id)})))
 }
 
 #[derive(Deserialize)]

@@ -257,10 +257,15 @@ async fn on_event(st: &St, ev: Event) -> Result<()> {
                     (footer, kb)
                 }
                 "cancelled" => (format!("⏹ <b>Stopped</b> · {stats}"), None),
-                _ => (
-                    format!("❌ <b>Failed</b> · {stats}\n\n{}", html_escape(&truncate(run.error.as_deref().unwrap_or(""), 2500))),
-                    None,
-                ),
+                _ => {
+                    let err = run.error.as_deref().unwrap_or("");
+                    let hint = if crate::limits::looks_like_limit(err) {
+                        format!("\n\n⏰ Usage limit reached — open the chat to schedule it to continue when the limit resets.{}", link(st, &format!("/chats/{}", chat.id)))
+                    } else {
+                        String::new()
+                    };
+                    (format!("❌ <b>Failed</b> · {stats}\n\n{}{hint}", html_escape(&truncate(err, 2500))), None)
+                }
             };
             send(st, Some(&chat), &text, kb).await?;
         }

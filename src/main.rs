@@ -15,6 +15,7 @@ mod devserver;
 mod events;
 mod extensions;
 mod git;
+mod limits;
 mod plan_usage;
 mod prices;
 mod runner;
